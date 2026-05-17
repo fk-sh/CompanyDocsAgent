@@ -3,6 +3,14 @@ spring:
     name: agent-kb-qa
   profiles:
     active: dev
+  web:
+    locale: zh_CN
+    locale-resolver: fixed
 
 server:
   port: 8080
+  servlet:
+    encoding:
+      charset: UTF-8
+      enabled: true
+      force: true

@@ -15,20 +15,13 @@ spring:
 
   autoconfigure:
     exclude:
-      org.springframework.boot.autoconfigure.data.redis.RedisAutoConfiguration
-      org.springframework.boot.autoconfigure.elasticsearch.ElasticsearchRestClientAutoConfiguration
+      - org.springframework.boot.autoconfigure.data.redis.RedisAutoConfiguration
+      - org.springframework.boot.autoconfigure.elasticsearch.ElasticsearchRestClientAutoConfiguration
+      - dev.langchain4j.spring.LangChain4jAutoConfiguration
 
-langchain4j:
-  open-ai:
-    chat-model:
-      base-url: https://api.deepseek.com/v1
-      api-key: test-api-key
-      model-name: deepseek-chat
-    streaming-chat-model:
-      base-url: https://api.deepseek.com/v1
-      api-key: test-api-key
-      model-name: deepseek-chat
-
-logging:
-  level:
-    com.agent: DEBUG
+deepseek:
+  base-url: https://api.deepseek.com/v1
+  api-key: ${DEEPSEEK_API_KEY:test-key}
+  model-name: deepseek-chat
+  temperature: 0.0
+  max-tokens: 128
