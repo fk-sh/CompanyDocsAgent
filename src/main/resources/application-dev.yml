@@ -13,10 +13,6 @@ spring:
   elasticsearch:
     uris: http://localhost:9200
 
-  autoconfigure:
-    exclude:
-      - dev.langchain4j.spring.LangChain4jAutoConfiguration
-
 deepseek:
   base-url: https://api.deepseek.com/v1
   api-key: ${DEEPSEEK_API_KEY}
