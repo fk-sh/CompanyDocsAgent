@@ -9,27 +9,21 @@ import java.util.List;
 import java.util.UUID;
 
 /**
- * 父子 Chunk 切割器，先生成父 Chunk，再在父 Chunk 内部拆分子 Chunk。
+ * 父子 Chunk 切割器，<b>由父生成子</b>，而非由子拼接父。
  * <p>
- * 设计动机：
- * <ul>
- *   <li><b>父 Chunk（~2048 字）</b>：由多个相邻 ContentBlock 拼接而成的粗粒度上下文窗口，
- *       在章节边界或大小上限处切分，送入 LLM 时提供完整语义背景</li>
- *   <li><b>子 Chunk（~512 字）</b>：从父 Chunk 内部按滑动窗口切割，粒度小、语义集中，
- *       适合向量检索（KNN）</li>
- * </ul>
+ * 核心流程：
+ * <ol>
+ *   <li>遍历 ContentBlock，按章节边界和大小上限（2048 字）拼接为<b>父 Chunk</b></li>
+ *   <li>在每个父 Chunk 内部用滑动窗口（512 字 + 64 重叠）拆分为<b>子 Chunk</b></li>
+ *   <li>子 Chunk 切割时直接记录 {@code parentChunkId}，并通过偏移映射
+ *       从原始 ContentBlock 继承类型（CODE/TABLE/TEXT）和章节标题</li>
+ * </ol>
  * <p>
- * 父子链接建立：
+ * 检索时的父子联动：
  * <pre>
  *   子 Chunk 命中 → child.getParentChunkId() → 拉取父 Chunk 完整上下文 → 送入 LLM
  * </pre>
- * <p>
- * 生成规则（自顶向下）：
- * <ol>
- *   <li>遍历 ContentBlock，拼接为父 Chunk（章节切换或累计 > 2048 字时切分）</li>
- *   <li>对每个父 Chunk 执行滑动窗口切割，生成子 Chunk（512 字窗口 + 64 字重叠）</li>
- *   <li>切割时直接记录 parentChunkId，并通过偏移映射从原始 ContentBlock 继承类型和章节信息</li>
- * </ol>
+ * 父 Chunk（~2048 字）提供完整语义背景，子 Chunk（~512 字）专注精准向量检索。
  */
 @Slf4j
 @Component
