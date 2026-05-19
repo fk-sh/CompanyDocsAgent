@@ -17,8 +17,14 @@ deepseek:
   base-url: https://api.deepseek.com/v1
   api-key: ${DEEPSEEK_API_KEY}
   model-name: deepseek-chat
-  temperature: 0.7
+  temperature: 0.1
   max-tokens: 4096
+
+embedding:
+  base-url: http://localhost:11434
+  model-name: modelscope.cn/Embedding-GGUF/bge-large-zh-v1.5:latest
+  dimension: 1024
+  batch-size: 32
 
 management:
   endpoints:
