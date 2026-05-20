@@ -59,7 +59,10 @@ public class FullIngestionPipeline {
      */
     public Document ingestToEs(Path filePath) throws IOException {
         String fileName = filePath.getFileName().toString();
+        // 从文件扩展名推断文件类型
         String fileType = fileName.substring(fileName.lastIndexOf('.') + 1).toLowerCase();
+        // 创建 Document 实例
+        log.info("Creating document for file: {} with type: {}", fileName, fileType);
         Document document = new Document(UUID.randomUUID().toString(), fileName, fileType);
 
         return ingestToEs(document, filePath, null);
@@ -73,32 +76,46 @@ public class FullIngestionPipeline {
      * @param statusCallback 状态变更回调（可为 null）
      * @return 摄入完成后的 Document（状态为 READY）
      */
+
+    //这个就是全链路摄入管道的主方法，负责调用其他组件完成文档摄入任务
     public Document ingestToEs(Document document, Path filePath,
                                 Consumer<Document.DocumentStatus> statusCallback) throws IOException {
         log.info("Starting full ingestion pipeline for document: {}", document.getId());
-
+        // 调用 IngestionService 进行文档解析、切割和向量化，返回的是一个 列表，每个元素是一个 Chunk
+        // 每个 Chunk 包含原始文本、解析后的文本、向量等信息，但是此时还没有向量化，因此向量值为空
+        //test_doc.md → PDF/Word/MD 解析器 → 提取 TEXT/Table/Code → ParentChildChunker 切割 → 16 个 Chunk
         List<Chunk> chunks = ingestionService.ingest(document, filePath, statusCallback);
 
+        // 把文档状态从 UPLOADED 改为 EMBEDDING
         updateStatus(document, Document.DocumentStatus.EMBEDDING, statusCallback);
+        // 从 Chunk 中提取文本内容
         List<String> texts = chunks.stream().map(Chunk::getContent).toList();
+        // 调用 EmbeddingService 生成向量
+        // 每个向量的维度是 1024，每个元素是一个 float 值
         List<float[]> embeddings = embeddingService.embedBatch(texts);
 
+        // 遍历每个 Chunk，将向量赋值给对应的 Chunk
+        // 每个 Chunk 包含原始文本、解析后的文本、向量等信息
+        // 每个向量的维度是 1024，每个元素是一个 float 值
         for (int i = 0; i < chunks.size(); i++) {
             chunks.get(i).setEmbedding(embeddings.get(i));
         }
         log.info("Generated {} embeddings for document {}", embeddings.size(), document.getId());
-
+        // 把文档状态从 EMBEDDING 改为 INDEXING
         updateStatus(document, Document.DocumentStatus.INDEXING, statusCallback);
+        // 调用 ElasticsearchVectorStore 将 Chunk 写入 ES
+        // 每个 Chunk 包含原始文本、解析后的文本、向量等信息
+        // 每个向量的维度是 1024，每个元素是一个 float 值
         vectorStore.upsertBatch(chunks);
-        document.setChunkCount(chunks.size());
+        document.setChunkCount(chunks.size());// 设置文档的 Chunk 数
         log.info("Indexed {} chunks to ES for document {}", chunks.size(), document.getId());
-
+        // 把文档状态从 INDEXING 改为 READY，表示文档已完全摄入，该流程已结束
         updateStatus(document, Document.DocumentStatus.READY, statusCallback);
         return document;
     }
 
     /**
-     * 全链路摄入（无状态回调）。
+     * 全链路摄入（无状态回调）。没有状态变更回调，直接进行文档向量化和写入 ES。
      */
     public Document ingestToEs(Document document, Path filePath) throws IOException {
         return ingestToEs(document, filePath, null);

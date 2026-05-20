@@ -50,6 +50,12 @@ public class EmbeddingServiceImpl implements EmbeddingService {
     }
 
     @Override
+    /**
+     * 将单条文本向量化,文本向量化为1024 维 float 向量
+     *
+     * @param text 输入文本
+     * @return 1024 维 float 向量
+     */
     public float[] embed(String text) {
         return cache.get(text).orElseGet(() -> {
             float[] embedding = callEmbeddingApi(List.of(text)).get(0);
@@ -65,31 +71,38 @@ public class EmbeddingServiceImpl implements EmbeddingService {
         }
 
         List<float[]> result = new ArrayList<>();
-        List<String> uncachedTexts = new ArrayList<>();
-        List<Integer> uncachedIndices = new ArrayList<>();
+        List<String> uncachedTexts = new ArrayList<>();// 未命中缓存的文本
+        List<Integer> uncachedIndices = new ArrayList<>();// 未命中缓存的文本索引
 
         for (int i = 0; i < texts.size(); i++) {
             String text = texts.get(i);
-            Optional<float[]> cached = cache.get(text);
-            if (cached.isPresent()) {
-                result.add(cached.get());
+            Optional<float[]> cached = cache.get(text);// 从缓存中获取向量，可能为空
+            if (cached.isPresent()) {// 缓存命中
+                result.add(cached.get());// 直接返回缓存中的向量，交给调用者处理，存储进ES向量数据库中
             } else {
+                // 缓存未命中，调用 API 给它们生成向量，方便后边添加data到ES向量数据库中
                 result.add(null);
-                uncachedTexts.add(text);
-                uncachedIndices.add(i);
+                uncachedTexts.add(text);// 未命中缓存的文本
+                uncachedIndices.add(i);// 未命中缓存的文本索引
             }
         }
 
+        // ------------处理未命中缓存的文本----------------
         if (!uncachedTexts.isEmpty()) {
+            //将文本按批次大小分批，避免单次请求过大
             List<List<String>> batches = partition(uncachedTexts, config.getBatchSize());
             int offset = 0;
 
+            // 遍历每个批次，调用 API 生成向量
             for (List<String> batch : batches) {
+                // 调用 API 生成向量
                 List<float[]> batchEmbeddings = callEmbeddingApi(batch);
                 for (int j = 0; j < batch.size(); j++) {
+                    // 存储到缓存中，方便后续使用
+                    // 计算全局索引，将新生成的向量批量存储到ES向量数据库中 ，并返回给调用者
                     int globalIndex = uncachedIndices.get(offset + j);
-                    result.set(globalIndex, batchEmbeddings.get(j));
-                    cache.put(batch.get(j), batchEmbeddings.get(j));
+                    result.set(globalIndex, batchEmbeddings.get(j));// 将新生成的向量存储到结果列表中
+                    cache.put(batch.get(j), batchEmbeddings.get(j));// 同时将新生成的向量存储到redis缓存中
                 }
                 offset += batch.size();
             }
@@ -99,6 +112,7 @@ public class EmbeddingServiceImpl implements EmbeddingService {
     }
 
     @Override
+    // 返回向量维度
     public int dimension() {
         return config.getDimension();
     }
@@ -150,7 +164,10 @@ public class EmbeddingServiceImpl implements EmbeddingService {
 
     /**
      * 将列表按指定大小分批。
+     * 
      */
+    //## 为什么需要它？
+    // Ollama Embedding API 一次能处理的文本数量有限制。如果把 100 条文本一次发过去，可能超时或 OOM。所以要切成小批：
     private static <T> List<List<T>> partition(List<T> list, int size) {
         List<List<T>> partitions = new ArrayList<>();
         for (int i = 0; i < list.size(); i += size) {

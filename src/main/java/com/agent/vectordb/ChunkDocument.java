@@ -16,7 +16,7 @@ import java.util.Map;
  */
 @Getter
 @Setter
-class ChunkDocument {
+public class ChunkDocument {
 
     /** Chunk 唯一标识，对应 ES 文档 _id */
     private String id;

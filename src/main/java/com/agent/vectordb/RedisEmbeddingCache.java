@@ -53,7 +53,7 @@ public class RedisEmbeddingCache implements EmbeddingCache {
             return Optional.empty();
         }
         try {
-            return Optional.of(objectMapper.readValue(json, float[].class));
+            return Optional.of(objectMapper.readValue(json, float[].class));// 从 JSON 反序列化为 float[]
         } catch (Exception e) {
             log.warn("Failed to deserialize embedding from Redis key={}", key, e);
             redisTemplate.delete(key);
@@ -64,7 +64,7 @@ public class RedisEmbeddingCache implements EmbeddingCache {
     @Override
     public void put(String text, float[] embedding) {
         try {
-            String json = objectMapper.writeValueAsString(embedding);
+            String json = objectMapper.writeValueAsString(embedding);// 序列化为 JSON 字符串
             redisTemplate.opsForValue().set(toKey(text), json, ttl);
         } catch (Exception e) {
             log.warn("Failed to cache embedding to Redis", e);
@@ -89,7 +89,7 @@ public class RedisEmbeddingCache implements EmbeddingCache {
     /**
      * 将文本转为 Redis key：{@code embedding:cache:{SHA-256(text)}}。
      */
-    private static String toKey(String text) {
+    private static String toKey(String text) {//文本内容，不是用户提问
         return KEY_PREFIX + sha256(text);
     }
 

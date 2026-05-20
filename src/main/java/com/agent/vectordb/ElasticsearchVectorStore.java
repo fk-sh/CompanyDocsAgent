@@ -161,18 +161,21 @@ public class ElasticsearchVectorStore {
      */
     public List<Chunk> bm25Search(String queryText, int k) {
         try {
+            // 构建 BM25 搜索请求
             SearchRequest searchRequest = SearchRequest.of(s -> s
                     .index(EsIndexInitializer.CHUNKS_INDEX)
-                    .query(q -> q
-                            .match(m -> m
-                                    .field("content")
-                                    .query(queryText)
+                    .query(q -> q // 匹配查询文本的文档
+                            .match(m -> m // 匹配 content 字段包含查询文本的文档
+                                    .field("content")// 匹配 content 字段
+                                    .query(queryText)// 匹配 content 字段包含查询文本的文档
                             )
                     )
-                    .size(k)
+                    .size(k)// 限制返回 Top-K 结果数
             );
 
+            // 执行 BM25 搜索
             SearchResponse<ChunkDocument> response = esClient.search(searchRequest, ChunkDocument.class);
+            // 解析搜索结果，将文档转换为 Chunk 列表
             return hitsToChunks(response.hits().hits());
         } catch (IOException e) {
             log.error("BM25 search failed", e);
@@ -187,16 +190,16 @@ public class ElasticsearchVectorStore {
         try {
             DeleteByQueryRequest request = DeleteByQueryRequest.of(d -> d
                     .index(EsIndexInitializer.CHUNKS_INDEX)
-                    .conflicts(co.elastic.clients.elasticsearch._types.Conflicts.Proceed)
-                    .refresh(true)
-                    .query(q -> q
-                            .term(t -> t
-                                    .field("documentId")
-                                    .value(documentId)
+                    .conflicts(co.elastic.clients.elasticsearch._types.Conflicts.Proceed)// 忽略冲突，继续删除
+                                       .refresh(true)// 立即刷新索引，确保删除生效
+                    .query(q -> q// 删除 documentId 字段等于指定值的文档
+                            .term(t -> t// 匹配 documentId 字段等于指定值的文档
+                                    .field("documentId")// 匹配 documentId 字段
+                                    .value(documentId)// 匹配 documentId 字段等于指定值的文档
                             )
                     )
             );
-            DeleteByQueryResponse response = esClient.deleteByQuery(request);
+            DeleteByQueryResponse response = esClient.deleteByQuery(request);// 删除文档
             log.info("Deleted {} chunks for document {}", response.deleted(), documentId);
         } catch (IOException e) {
             log.error("Failed to delete chunks for document {}", documentId, e);
@@ -231,11 +234,14 @@ public class ElasticsearchVectorStore {
     @SuppressWarnings("unchecked")
     private List<Chunk> hitsToChunks(List<Hit<ChunkDocument>> hits) {
         List<Chunk> chunks = new ArrayList<>();
+        // 遍历搜索结果，将文档转换为 Chunk 列表
         for (Hit<ChunkDocument> hit : hits) {
             if (hit.source() == null) continue;
 
+            // 从搜索结果中提取文档
             ChunkDocument doc = hit.source();
             Chunk chunk = new Chunk();
+            // 从文档中提取 Chunk 相关信息
             chunk.setId(doc.getId());
             chunk.setDocumentId(doc.getDocumentId());
             chunk.setParentChunkId(doc.getParentChunkId());
@@ -276,6 +282,10 @@ public class ElasticsearchVectorStore {
         doc.setMetadata(chunk.getMetadata());
         doc.setCreatedAt(chunk.getCreatedAt() != null ? chunk.getCreatedAt().toString() : Instant.now().toString());
         return doc;
+    }
+
+    public ElasticsearchClient getEsClient() {
+        return esClient;
     }
 
     /**
