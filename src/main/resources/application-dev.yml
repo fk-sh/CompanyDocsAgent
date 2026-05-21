@@ -39,3 +39,8 @@ management:
 logging:
   level:
     com.agent: DEBUG
+
+mybatis-plus:
+  configuration:
+    map-underscore-to-camel-case: true
+    log-impl: org.apache.ibatis.logging.stdout.StdOutImpl

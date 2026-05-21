@@ -9,3 +9,7 @@ target/
 .idea/
 *.iml
 .vscode/
+test/
+docs/
+docs/phase4-ingestion-pipeline.md
+docs/phase4-interview-review.md
