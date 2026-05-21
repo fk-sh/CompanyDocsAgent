@@ -127,7 +127,6 @@ public class VectorMemory implements Memory {
      *   <li>若 _score &lt; 阈值 → 全新写入</li>
      * </ol>
      * <p>
-     * 没有 SHA-256 精确匹配——所有去重都通过向量语义相似度完成，
      * "今天天气怎么样" 和 "今天天气如何" 会被识别为语义相近并合并。
      */
     @Override
@@ -136,13 +135,13 @@ public class VectorMemory implements Memory {
             return;
         }
 
-        float[] embedding = embeddingService.embed(message.getContent());
-        String matchId = searchSemanticDuplicate(embedding);
+        float[] embedding = embeddingService.embed(message.getContent());//对消息内容进行量化处理
+        String matchId = searchSemanticDuplicate(embedding);//搜索语义重复的文档
 
         if (matchId != null) {
-            mergeIntoExisting(matchId, message);
+            mergeIntoExisting(matchId, message);//合并到已有文档
         } else {
-            insertNew(message, embedding);
+            insertNew(message, embedding);//全新写入
         }
     }
 
@@ -198,11 +197,12 @@ public class VectorMemory implements Memory {
      * @return 按相似度降序排列的历史消息列表
      */
     public List<Message> search(String query, int k) {
-        float[] queryVector = embeddingService.embed(query);
+        float[] queryVector = embeddingService.embed(query);//对查询文本进行量化处理
 
         try {
-            int fetchSize = k * SEARCH_FETCH_MULTIPLIER;
+            int fetchSize = k * SEARCH_FETCH_MULTIPLIER;//多取 3 倍候选再截断，保证返回结果多样性
 
+            // 构建 KNN 搜索请求
             KnnSearch knn = KnnSearch.of(kq -> kq
                     .field("embedding")
                     .queryVector(toFloatList(queryVector))
@@ -210,6 +210,7 @@ public class VectorMemory implements Memory {
                     .numCandidates(fetchSize * NUM_CANDIDATES_MULTIPLIER)
             );
 
+            // 构建 ES 搜索请求，将 KNN 搜索装配到一个完整的 Elasticsearch 搜索请求中
             SearchRequest searchRequest = SearchRequest.of(s -> s
                     .index(MEMORY_INDEX)
                     .knn(knn)
@@ -315,13 +316,15 @@ public class VectorMemory implements Memory {
      */
     private String searchSemanticDuplicate(float[] queryEmbedding) {
         try {
+            //搜什么
             KnnSearch knn = KnnSearch.of(kq -> kq
                     .field("embedding")
                     .queryVector(toFloatList(queryEmbedding))
-                    .k(1)
+                    .k(1)//只取最相似的一条
                     .numCandidates(10)
             );
 
+            //在哪搜
             SearchRequest searchRequest = SearchRequest.of(s -> s
                     .index(MEMORY_INDEX)
                     .knn(knn)
@@ -329,10 +332,11 @@ public class VectorMemory implements Memory {
             );
 
             SearchResponse<MemoryDocument> response = esClient.search(searchRequest, MemoryDocument.class);
-            List<Hit<MemoryDocument>> hits = response.hits().hits();
+            List<Hit<MemoryDocument>> hits = response.hits().hits();//获取搜索结果
+            // 检查是否有结果，且分数是否超过阈值
             if (!hits.isEmpty() && hits.get(0).score() != null
                     && hits.get(0).score() >= SEMANTIC_MERGE_THRESHOLD) {
-                return hits.get(0).id();
+                return hits.get(0).id();//返回最相似文档的 id
             }
         } catch (IOException e) {
             log.warn("Semantic dedup search failed: {}", e.getMessage());
@@ -356,16 +360,17 @@ public class VectorMemory implements Memory {
      * @param message 新消息
      */
     private void mergeIntoExisting(String esId, Message message) {
-        try {
+        try {//根据 文档esId 从 ES 拉出旧文档完整内容
             MemoryDocument existing = esClient.get(g -> g
                     .index(MEMORY_INDEX).id(esId), MemoryDocument.class).source();
 
-            String mergedContent = existing.getContent() + "；" + message.getContent();
-            int mergeCount = (existing.getMergeCount() != null ? existing.getMergeCount() : 1) + 1;
-            float[] mergedEmbedding = embeddingService.embed(mergedContent);
+            String mergedContent = existing.getContent() + "；" + message.getContent();//拼接旧内容 + "；" + 新内容
+            int mergeCount = (existing.getMergeCount() != null ? existing.getMergeCount() : 1) + 1;//合并次数 + 1
+            float[] mergedEmbedding = embeddingService.embed(mergedContent);//重新向量化合并后的内容
 
             String now = Instant.now().toString();
 
+            // 更新 ES 文档
             UpdateRequest<MemoryDocument, MemoryDocument> update = UpdateRequest.of(u -> u
                     .index(MEMORY_INDEX)
                     .id(esId)
@@ -376,8 +381,10 @@ public class VectorMemory implements Memory {
                     ))
                     .refresh(co.elastic.clients.elasticsearch._types.Refresh.True)
             );
+            // 执行更新请求
             esClient.update(update, MemoryDocument.class);
 
+            // 同步更新 messageCache
             Message mergedMsg = new Message(
                     Message.Role.valueOf(existing.getRole()), mergedContent);
             mergedMsg.setId(esId);
@@ -404,11 +411,12 @@ public class VectorMemory implements Memory {
             String id = (message.getId() != null) ? message.getId()
                     : UUID.randomUUID().toString().replace("-", "");
             String now = Instant.now().toString();
+            // 构建 ES 文档
             MemoryDocument doc = new MemoryDocument(
                     id, message.getRole().name(), message.getContent(),
                     toFloatList(embedding), currentSessionId, now, 1, now
             );
-
+            // 写入 ES 文档
             esClient.index(i -> i
                     .index(MEMORY_INDEX).id(id).document(doc)
                     .refresh(co.elastic.clients.elasticsearch._types.Refresh.True));
@@ -424,11 +432,13 @@ public class VectorMemory implements Memory {
      */
     private List<Message> hitsToMessages(List<Hit<MemoryDocument>> hits, int maxResults) {
         List<Message> result = new ArrayList<>();
+        // 遍历搜索结果，将每个文档转换为 Message 列表
         for (Hit<MemoryDocument> hit : hits) {
             MemoryDocument doc = hit.source();
             if (doc == null) {
                 continue;
             }
+            // 转换为 Message
             Message msg = new Message(Message.Role.valueOf(doc.getRole()), doc.getContent());
             msg.setId(doc.getId());
             msg.setTimestamp(doc.getUpdatedAt() != null

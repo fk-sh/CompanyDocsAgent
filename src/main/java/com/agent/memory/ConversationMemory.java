@@ -13,7 +13,7 @@ import java.util.LinkedList;
 import java.util.List;
 
 /**
- * 短期记忆实现，管理当前会话的多轮对话历史。
+ * 短期记忆（工作记忆）实现，管理当前会话的多轮对话历史。
  * <p>
  * 采用<b>滑动窗口 + Token 预算 + LLM 压缩</b>三层机制：
  * <ol>

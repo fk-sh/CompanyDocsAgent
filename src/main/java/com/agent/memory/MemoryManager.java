@@ -236,10 +236,10 @@ public class MemoryManager {
      * ConversationMemory（内存） + MySQL（异步） + ES VectorMemory（异步）。
      */
     public void addMessage(String sessionId, Message message) {
-        conversationMemory.add(message);
-        persistMessageAsync(sessionId, message);
+        conversationMemory.add(message);// 写入 ConversationMemory
+        persistMessageAsync(sessionId, message);// 异步写入 MySQL
         if (vectorMemory != null) {
-            vectorMemory.addAsync(message);
+            vectorMemory.addAsync(message);// 异步写入 ES VectorMemory
         }
     }
 
@@ -317,7 +317,7 @@ public class MemoryManager {
     @Async
     public void persistMessageAsync(String sessionId, Message message) {
         try {
-            messageStore.save(sessionId, message);
+            messageStore.save(sessionId, message);// 异步写入 MySQL
         } catch (Exception e) {
             log.warn("Async persist message failed: {}", e.getMessage());
         }

@@ -122,31 +122,30 @@ public class UserMemory implements Memory {
                 return;
             }
 
-            UserProfile existing = loadProfile(userId);
-            String mergedJson;
+            UserProfile existing = loadProfile(userId);// 从数据库中加载用户偏好
+            String mergedJson;// 合并后的用户偏好 JSON
             if (existing != null && existing.getPreferences() != null
                     && !existing.getPreferences().isBlank()) {
-                mergedJson = mergeProfiles(existing.getPreferences(), extracted);
+                mergedJson = mergeProfiles(existing.getPreferences(), extracted);// 合并用户偏好
             } else {
-                mergedJson = extracted;
+                mergedJson = extracted;// 无历史偏好时，直接使用新提取的信息填充
             }
 
             if (existing != null) {
-                existing.setPreferences(mergedJson);
-                existing.setVersion(existing.getVersion() + 1);
-                existing.setUpdatedAt(LocalDateTime.now());
-                profileMapper.updateById(existing);
+                existing.setPreferences(mergedJson);// 更新用户偏好
+                existing.setVersion(existing.getVersion() + 1);// 版本号 +1
+                existing.setUpdatedAt(LocalDateTime.now());// 更新时间
+                profileMapper.updateById(existing);// 更新数据库中的用户偏好
             } else {
-                UserProfile profile = new UserProfile();
-                profile.setUserId(userId);
-                profile.setPreferences(mergedJson);
-                profile.setVersion(1);
-                profileMapper.insert(profile);
+                UserProfile profile = new UserProfile();// 创建新用户偏好记录
+                profile.setUserId(userId);// 设置用户 ID
+                profile.setPreferences(mergedJson);// 设置用户偏好
+                profile.setVersion(1);// 版本号为 1
+                profileMapper.insert(profile);// 插入数据库
             }
 
-            profileCache.put(userId, mergedJson);
-            log.debug("Saved user profile for {}: {}", userId,
-                    mergedJson.length() > 60 ? mergedJson.substring(0, 60) + "..." : mergedJson);
+            profileCache.put(userId, mergedJson);// 缓存合并后的用户偏好
+            log.debug("合并后的用户偏好: {}", mergedJson);
         } catch (Exception e) {
             log.warn("Failed to extract/save user profile for {}: {}", userId, e.getMessage());
         }
@@ -160,14 +159,14 @@ public class UserMemory implements Memory {
      * @return JSON 字符串，无画像时返回 null
      */
     public String getProfile(String userId) {
-        String cached = profileCache.get(userId);
+        String cached = profileCache.get(userId);// 从缓存中获取用户偏好
         if (cached != null) {
             return cached;
         }
-        UserProfile profile = loadProfile(userId);
+        UserProfile profile = loadProfile(userId);// 从数据库中加载用户偏好
         if (profile != null && profile.getPreferences() != null
                 && !profile.getPreferences().isBlank()) {
-            profileCache.put(userId, profile.getPreferences());
+            profileCache.put(userId, profile.getPreferences());// 缓存用户偏好
             return profile.getPreferences();
         }
         return null;
@@ -181,7 +180,7 @@ public class UserMemory implements Memory {
      * @return 如 "用户所在城市：北京，职业：程序员"，无画像时返回空字符串
      */
     public String buildUserContextPrompt(String userId) {
-        String profileJson = getProfile(userId);
+        String profileJson = getProfile(userId);// 从数据库中加载用户偏好 JSON
         if (profileJson == null || profileJson.isBlank()) {
             return "";
         }
@@ -189,7 +188,7 @@ public class UserMemory implements Memory {
         StringBuilder sb = new StringBuilder();
         sb.append("【用户画像】\n");
 
-        Map<String, String> fields = parseSimpleJson(profileJson);
+        Map<String, String> fields = parseSimpleJson(profileJson);// 解析 JSON 字符串为键值对
         for (Map.Entry<String, String> entry : fields.entrySet()) {
             String key = entry.getKey();
             String value = entry.getValue();
@@ -226,8 +225,8 @@ public class UserMemory implements Memory {
      * LLM 返回纯 JSON。
      */
     private String extractPreferences(String content) {
-        String prompt = String.format(EXTRACT_PROMPT, content);
-        return chatClient.chat(prompt);
+        String prompt = String.format(EXTRACT_PROMPT, content);// 构建提取用户偏好的提示词
+        return chatClient.chat(prompt);// 调用 LLM 提取用户偏好
     }
 
     /**
@@ -277,7 +276,7 @@ public class UserMemory implements Memory {
                 segmentStart = i + 1;
             }
         }
-        parseEntry(body.substring(segmentStart), result);
+        parseEntry(body.substring(segmentStart), result);// 解析最后一个键值对
 
         return result;
     }
