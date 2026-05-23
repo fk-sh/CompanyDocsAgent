@@ -2,6 +2,8 @@ package com.agent.agent;
 
 import com.agent.core.Agent;
 import com.agent.core.AgentContext;
+import com.agent.core.AgentSkill;
+import com.agent.core.AgentSkill.VariableDef;
 import com.agent.core.Orchestrator;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
@@ -53,6 +55,21 @@ public class OrchestratorAgent implements Orchestrator {
     @Override
     public String name() {
         return "orchestrator";
+    }
+
+    @Override
+    public AgentSkill skill() {
+        return new AgentSkill(
+                "orchestrator",
+                "编排调度：根据意图标签路由到对应子 Agent 链路（knowledge_qa / chitchat / doc_ingestion / multi_intent），控制 Reflection 回退循环",
+                List.of(
+                        VariableDef.input("intent", "String", "意图标签"),
+                        VariableDef.optionalInput("subTasks", "List<SubTask>", "多意图时的子任务列表")
+                ),
+                List.of(
+                        VariableDef.output("finalAnswer", "String", "编排完成后写入的最终答案")
+                )
+        );
     }
 
     @Override

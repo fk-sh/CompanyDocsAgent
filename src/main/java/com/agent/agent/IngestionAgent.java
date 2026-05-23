@@ -2,6 +2,8 @@ package com.agent.agent;
 
 import com.agent.core.Agent;
 import com.agent.core.AgentContext;
+import com.agent.core.AgentSkill;
+import com.agent.core.AgentSkill.VariableDef;
 import com.agent.core.Document;
 import com.agent.ingestion.FullIngestionPipeline;
 import lombok.extern.slf4j.Slf4j;
@@ -11,6 +13,7 @@ import org.springframework.stereotype.Component;
 
 import java.io.IOException;
 import java.nio.file.Path;
+import java.util.List;
 import java.util.UUID;
 
 /**
@@ -36,6 +39,22 @@ public class IngestionAgent implements Agent {
     @Override
     public String name() {
         return "ingestion";
+    }
+
+    @Override
+    public AgentSkill skill() {
+        return new AgentSkill(
+                "ingestion",
+                "文档摄入：解析文档 → 提取内容 → 切割分段 → 向量化 → 存入 ES 知识库，异步执行",
+                List.of(
+                        VariableDef.input("filePath", "String", "待摄入文档的本地文件路径")
+                ),
+                List.of(
+                        VariableDef.output("taskId", "String", "摄入任务 ID"),
+                        VariableDef.output("ingestionStatus", "String", "任务状态：PROCESSING / READY / FAILED"),
+                        VariableDef.output("documentId", "String", "摄入成功后的文档 ID")
+                )
+        );
     }
 
     @Override

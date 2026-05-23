@@ -2,6 +2,8 @@ package com.agent.agent;
 
 import com.agent.core.Agent;
 import com.agent.core.AgentContext;
+import com.agent.core.AgentSkill;
+import com.agent.core.AgentSkill.VariableDef;
 import com.agent.core.Chunk;
 import com.agent.core.Message;
 import com.agent.llm.DeepSeekChatClient;
@@ -80,6 +82,25 @@ public class GeneratorAgent implements Agent {
     @Override
     public String name() {
         return "generator";
+    }
+
+    @Override
+    public AgentSkill skill() {
+        return new AgentSkill(
+                "generator",
+                "答案生成：根据意图标签拼接对应 Prompt 并调用 LLM 生成最终回答，支持 knowledge_qa / chitchat / multi_intent 三种模式",
+                List.of(
+                        VariableDef.input("intent", "String", "意图标签：knowledge_qa / chitchat / multi_intent"),
+                        VariableDef.input("userQuery", "String", "用户原始问题"),
+                        VariableDef.optionalInput("retrievedContext", "String", "检索到的文档上下文（knowledge_qa 时必填）"),
+                        VariableDef.optionalInput("memoryContext", "String", "历史对话上下文"),
+                        VariableDef.optionalInput("critique", "String", "Reviewer 的批评意见（Reflection 回退时）"),
+                        VariableDef.optionalInput("subAnswers", "String", "多意图时的子任务回答汇总")
+                ),
+                List.of(
+                        VariableDef.output("answer", "String", "生成的回答文本")
+                )
+        );
     }
 
     /**

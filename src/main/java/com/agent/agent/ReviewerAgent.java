@@ -2,9 +2,13 @@ package com.agent.agent;
 
 import com.agent.core.Agent;
 import com.agent.core.AgentContext;
+import com.agent.core.AgentSkill;
+import com.agent.core.AgentSkill.VariableDef;
 import com.agent.llm.DeepSeekChatClient;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
+
+import java.util.List;
 
 /**
  * 质量审核 Agent，以 LLM-as-Judge 方式审阅生成答案的质量。
@@ -51,6 +55,24 @@ public class ReviewerAgent implements Agent {
     @Override
     public String name() {
         return "reviewer";
+    }
+
+    @Override
+    public AgentSkill skill() {
+        return new AgentSkill(
+                "reviewer",
+                "质量审核：以 LLM-as-Judge 方式审阅回答的事实准确性、引用完整性和无幻觉情况",
+                List.of(
+                        VariableDef.input("answer", "String", "待审核的 AI 回答"),
+                        VariableDef.input("retrievedContext", "String", "参考文档内容（用于事实校验）")
+                ),
+                List.of(
+                        VariableDef.output("reviewPassed", "Boolean", "审核是否通过"),
+                        VariableDef.output("reviewComment", "String", "审核意见"),
+                        VariableDef.output("critique", "String", "不通过时的具体批评意见（用于 Reflection 回退）"),
+                        VariableDef.output("finalAnswer", "String", "审核通过时写入的最终答案")
+                )
+        );
     }
 
     /**

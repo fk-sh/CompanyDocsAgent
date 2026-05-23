@@ -2,6 +2,8 @@ package com.agent.agent;
 
 import com.agent.core.Agent;
 import com.agent.core.AgentContext;
+import com.agent.core.AgentSkill;
+import com.agent.core.AgentSkill.VariableDef;
 import com.agent.core.Chunk;
 import com.agent.retrieval.HybridRetriever;
 import com.agent.retrieval.QueryRewriterImpl;
@@ -37,6 +39,21 @@ public class RetrieverAgent implements Agent {
     @Override
     public String name() {
         return "retriever";
+    }
+
+    @Override
+    public AgentSkill skill() {
+        return new AgentSkill(
+                "retriever",
+                "文档检索召回：对查询语句进行多路召回（BM25 + 向量）→ 粗排 → 精排，返回 TopK 文档片段",
+                List.of(
+                        VariableDef.input("subQueries", "List<String>", "待检索的查询语句列表")
+                ),
+                List.of(
+                        VariableDef.output("documents", "List<Chunk>", "检索到的文档片段列表"),
+                        VariableDef.output("retrievedContext", "String", "拼接好的文档上下文文本")
+                )
+        );
     }
 
     /**

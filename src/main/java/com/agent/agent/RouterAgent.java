@@ -2,6 +2,8 @@ package com.agent.agent;
 
 import com.agent.core.Agent;
 import com.agent.core.AgentContext;
+import com.agent.core.AgentSkill;
+import com.agent.core.AgentSkill.VariableDef;
 import com.agent.core.Message;
 import com.agent.llm.DeepSeekChatClient;
 import lombok.extern.slf4j.Slf4j;
@@ -58,7 +60,24 @@ public class RouterAgent implements Agent {
 
     @Override
     public String name() {
-        return "router";// 意图识别 Agent 名称
+        return "router";
+    }
+
+    @Override
+    public AgentSkill skill() {
+        return new AgentSkill(
+                "router",
+                "意图识别：分析用户输入，归类为 knowledge_qa / chitchat / doc_ingestion / multi_intent，多意图时拆解子任务",
+                List.of(
+                        VariableDef.input("userQuery", "String", "用户原始输入"),
+                        VariableDef.optionalInput("history", "List<Message>", "当前会话历史")
+                ),
+                List.of(
+                        VariableDef.output("intent", "String", "意图标签"),
+                        VariableDef.output("subQueries", "List<String>", "子任务查询列表"),
+                        VariableDef.output("subTasks", "List<SubTask>", "多意图时的子任务列表")
+                )
+        );
     }
 
     @Override
