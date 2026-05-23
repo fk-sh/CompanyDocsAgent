@@ -6,6 +6,9 @@ spring:
   web:
     locale: zh_CN
     locale-resolver: fixed
+  autoconfigure:
+    exclude:
+      - dev.langchain4j.spring.LangChain4jAutoConfig
 
 server:
   port: 8080
