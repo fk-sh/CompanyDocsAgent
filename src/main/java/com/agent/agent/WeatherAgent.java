@@ -5,7 +5,9 @@ import com.agent.core.AgentContext;
 import com.agent.core.AgentSkill;
 import com.agent.core.AgentSkill.VariableDef;
 import com.agent.core.Message;
-import com.agent.mcp.McpClient;
+import com.agent.mcp.McpTool;
+import io.modelcontextprotocol.spec.McpSchema.Content;
+import io.modelcontextprotocol.spec.McpSchema.TextContent;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
@@ -16,10 +18,13 @@ import java.util.Map;
 @Component("weatherAgent")
 public class WeatherAgent implements Agent {
 
-    private final McpClient mcpClient;
+    private final McpTool weatherTool;
 
-    public WeatherAgent(McpClient mcpClient) {
-        this.mcpClient = mcpClient;
+    public WeatherAgent(List<McpTool> tools) {
+        this.weatherTool = tools.stream()
+                .filter(t -> "weather_query".equals(t.name()))
+                .findFirst()
+                .orElse(null);
     }
 
     @Override
@@ -44,13 +49,28 @@ public class WeatherAgent implements Agent {
 
     @Override
     public String execute(AgentContext ctx) {
-        String city = ctx.getUserQuery();
+        String city = extractCity(ctx.getUserQuery());
         if (city == null || city.isEmpty()) {
             city = ctx.getVariable("userQuery", "北京");
         }
+        if (city.length() > 10) {
+            city = "北京";
+        }
 
         log.info("WeatherAgent calling MCP tool weather_query for: {}", city);
-        String result = mcpClient.callTool("weather_query", Map.of("city", city));
+
+        String result;
+        if (weatherTool != null) {
+            var callResult = weatherTool.call(Map.of("city", city));
+            if (!callResult.content().isEmpty()) {
+                Content c = callResult.content().get(0);
+                result = c instanceof TextContent tc ? tc.text() : c.toString();
+            } else {
+                result = "天气查询无结果";
+            }
+        } else {
+            result = "天气查询工具未注册";
+        }
 
         ctx.setVariable("answer", result);
         ctx.setVariable("finalAnswer", result);
@@ -58,5 +78,20 @@ public class WeatherAgent implements Agent {
 
         log.info("WeatherAgent completed: {}", result);
         return result;
+    }
+
+    private String extractCity(String query) {
+        if (query == null || query.isEmpty()) {
+            return "北京";
+        }
+        String[] cities = {"北京", "上海", "深圳", "广州", "杭州", "成都", "武汉",
+                "南京", "天津", "重庆", "西安", "长沙", "青岛", "大连", "厦门",
+                "苏州", "郑州", "沈阳", "哈尔滨", "昆明"};
+        for (String city : cities) {
+            if (query.contains(city)) {
+                return city;
+            }
+        }
+        return "北京";
     }
 }

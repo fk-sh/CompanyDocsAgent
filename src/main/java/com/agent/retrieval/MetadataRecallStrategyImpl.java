@@ -40,23 +40,33 @@ public class MetadataRecallStrategyImpl implements RecallStrategy {
             SearchRequest searchRequest = SearchRequest.of(s -> s
                     .index(EsIndexInitializer.CHUNKS_INDEX)
                     .query(q -> q.bool(b -> b
-                            .should(s1 -> s1.match(m -> m //should = 满足 任意一个 即可（逻辑 OR）
-                                    .field("metadata.sectionTitle")// 章节标题命中
-                                    .query(query)// 查询文本命中
-                                    .boost(3.0F)// 表示：用户搜"核心特性"时，如果一个 Chunk 的 sectionTitle 字段恰好就是"核心特性"，它的得分是同等内容匹配的 3 倍
+                            .should(s1 -> s1.matchPhrase(mp -> mp
+                                    .field("metadata.sectionTitle")
+                                    .query(query)
+                                    .boost(5.0F)
                             ))
                             .should(s2 -> s2.match(m -> m
-                                    .field("content")// 搜索内容
-                                    .query(query)// 搜索查询文本
-                                    .boost(1.0F)// 内容权重
+                                    .field("metadata.sectionTitle")
+                                    .query(query)
+                                    .boost(3.0F)
                             ))
-                            .minimumShouldMatch("1")// 至少命中一个字段
+                            .should(s3 -> s3.matchPhrase(mp -> mp
+                                    .field("content")
+                                    .query(query)
+                                    .boost(2.0F)
+                            ))
+                            .should(s4 -> s4.match(m -> m
+                                    .field("content")
+                                    .query(query)
+                                    .boost(1.0F)
+                            ))
+                            .minimumShouldMatch("1")
                             .filter(f -> f.term(t -> t
-                                    .field("metadata.isParent")// 过滤父文档
-                                    .value(co.elastic.clients.elasticsearch._types.FieldValue.of(true))// 父文档值为 true
+                                    .field("metadata.isParent")
+                                    .value(co.elastic.clients.elasticsearch._types.FieldValue.of(true))
                             ))
                     ))
-                    .size(topK)// 返回 Top-K 个结果
+                    .size(topK)
             );
             // 执行搜索
             SearchResponse<ChunkDocument> response = esClient.search(searchRequest, ChunkDocument.class);

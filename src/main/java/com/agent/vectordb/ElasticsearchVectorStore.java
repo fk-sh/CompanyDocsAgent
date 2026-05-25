@@ -141,11 +141,14 @@ public class ElasticsearchVectorStore {
             SearchRequest searchRequest = SearchRequest.of(s -> s
                     .index(EsIndexInitializer.CHUNKS_INDEX)
                     .knn(knn)
+                    .source(src -> src.filter(f -> f.excludes("createdAt")))
                     .size(k)
             );
 
             SearchResponse<ChunkDocument> response = esClient.search(searchRequest, ChunkDocument.class);
-            return hitsToChunks(response.hits().hits());
+            List<Chunk> chunks = hitsToChunks(response.hits().hits());
+            log.info("KNN search: returned {} hits", chunks.size());
+            return chunks;
         } catch (IOException e) {
             log.error("KNN search failed", e);
             throw new RuntimeException("KNN search failed", e);
@@ -161,22 +164,29 @@ public class ElasticsearchVectorStore {
      */
     public List<Chunk> bm25Search(String queryText, int k) {
         try {
-            // 构建 BM25 搜索请求
             SearchRequest searchRequest = SearchRequest.of(s -> s
                     .index(EsIndexInitializer.CHUNKS_INDEX)
-                    .query(q -> q // 匹配查询文本的文档
-                            .match(m -> m // 匹配 content 字段包含查询文本的文档
-                                    .field("content")// 匹配 content 字段
-                                    .query(queryText)// 匹配 content 字段包含查询文本的文档
-                            )
-                    )
-                    .size(k)// 限制返回 Top-K 结果数
+                    .query(q -> q.bool(b -> b
+                            .should(s1 -> s1.matchPhrase(mp -> mp
+                                    .field("content")
+                                    .query(queryText)
+                                    .boost(3.0F)
+                            ))
+                            .should(s2 -> s2.match(m -> m
+                                    .field("content")
+                                    .query(queryText)
+                                    .boost(1.0F)
+                            ))
+                            .minimumShouldMatch("1")
+                    ))
+                    .source(src -> src.filter(f -> f.excludes("createdAt")))
+                    .size(k)
             );
 
-            // 执行 BM25 搜索
             SearchResponse<ChunkDocument> response = esClient.search(searchRequest, ChunkDocument.class);
-            // 解析搜索结果，将文档转换为 Chunk 列表
-            return hitsToChunks(response.hits().hits());
+            List<Chunk> result = hitsToChunks(response.hits().hits());
+            log.info("BM25 search: query='{}', hits={}", queryText, result.size());
+            return result;
         } catch (IOException e) {
             log.error("BM25 search failed", e);
             throw new RuntimeException("BM25 search failed", e);

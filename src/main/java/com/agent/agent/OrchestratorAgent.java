@@ -5,6 +5,7 @@ import com.agent.core.AgentContext;
 import com.agent.core.AgentSkill;
 import com.agent.core.AgentSkill.VariableDef;
 import com.agent.core.Orchestrator;
+import com.agent.llm.DeepSeekChatClient;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
@@ -24,13 +25,17 @@ import java.util.concurrent.ConcurrentHashMap;
  * 子 Agent 通过 Spring {@code @Autowired List<Agent>} 自动发现，
  * 按 name() 查找匹配的 Agent 实例。
  * <p>
- * 四条路由链路：
+ * 五条路由链路：
  * <pre>
- *   intent="knowledge_qa"  → RetrieverAgent → GeneratorAgent ⇄ ReviewerAgent (Reflection)
- *   intent="chitchat"      → GeneratorAgent
+ *   intent="knowledge_qa"  → RetrieverAgent ⇄ GeneratorAgent (ReAct)
+ *   intent="chitchat"      → GeneratorAgent（直接回复，无 ReAct）
+ *   intent="weather"       → WeatherAgent (MCP)
  *   intent="doc_ingestion" → IngestionAgent
  *   intent="multi_intent"  → SUB_TASK_LOOP → 各子链路 → GeneratorAgent(汇总)
  * </pre>
+ * <p>
+ * 最终审查：OrchestratorAgent 对所有链路产出的 finalAnswer 进行 Reflection 评价，
+ * 不通过则触发对应链路重试，通过后才正常输出。
  * <p>
  * 输入（ctx 读取）：intent, subTasks（多意图时）
  * 输出（ctx 写入）：finalAnswer
@@ -39,13 +44,37 @@ import java.util.concurrent.ConcurrentHashMap;
 @Component("orchestratorAgent")
 public class OrchestratorAgent implements Orchestrator {
 
+    private static final String EVAL_PROMPT = """
+            你是一个严格的质量审核员。请审核以下回答是否达标。
+
+            【用户问题】
+            %s
+
+            【回答】
+            %s
+
+            审核标准：
+            1. 回答是否直接回应了用户问题？是否存在答非所问？
+            2. 回答是否清晰、完整、无歧义？
+            3. 回答是否不存在明显的事实错误或编造？
+
+            请只回复一个单词：
+            PASS — 回答达标，可以输出
+            FAIL — 回答不达标，需要重新生成
+            """;
+
+    private static final int MAX_REACT_LOOPS = 3;
+
+    private final DeepSeekChatClient llm;
+
     // 子 Agent 映射表，按 name() 查找
     private final Map<String, Agent> agentMap = new ConcurrentHashMap<>();
-    public OrchestratorAgent(List<Agent> agents) {
-        //将所有Agent添加到map集合里边
+
+    public OrchestratorAgent(List<Agent> agents, DeepSeekChatClient llm) {
+        this.llm = llm;
         for (Agent agent : agents) {
             if (agent != this) {
-            registerAgent(agent);// 注册子 Agent 到映射表
+                registerAgent(agent);
             }
         }
         log.info("OrchestratorAgent initialized with {} agents: {}",
@@ -61,7 +90,7 @@ public class OrchestratorAgent implements Orchestrator {
     public AgentSkill skill() {
         return new AgentSkill(
                 "orchestrator",
-                "编排调度：根据意图标签路由到对应子 Agent 链路（knowledge_qa / chitchat / doc_ingestion / multi_intent），控制 Reflection 回退循环",
+                "编排调度：根据意图标签路由到对应子 Agent 链路（knowledge_qa / chitchat / doc_ingestion / multi_intent），对 knowledge_qa 结果进行最终审查",
                 List.of(
                         VariableDef.input("intent", "String", "意图标签"),
                         VariableDef.optionalInput("subTasks", "List<SubTask>", "多意图时的子任务列表")
@@ -74,12 +103,20 @@ public class OrchestratorAgent implements Orchestrator {
 
     @Override
     public String execute(AgentContext ctx) {
+        String existingIntent = ctx.getVariable("intent", null);
+        if (existingIntent == null) {
+            Agent router = findAgent("router");
+            if (router != null) {
+                router.execute(ctx);
+            }
+        }
         String intent = ctx.getVariable("intent", "knowledge_qa");
         log.info("OrchestratorAgent executing with intent: {}", intent);
 
         switch (intent) {
             case "knowledge_qa" -> executeKnowledgeQa(ctx);
             case "chitchat" -> executeChitchat(ctx);
+            case "weather" -> executeWeather(ctx);
             case "doc_ingestion" -> executeDocIngestion(ctx);
             case "multi_intent" -> executeMultiIntent(ctx);
             default -> {
@@ -94,37 +131,150 @@ public class OrchestratorAgent implements Orchestrator {
             ctx.setVariable("finalAnswer", answer);
         }
 
+        evaluateAndRefine(ctx, intent);
+
         log.info("OrchestratorAgent completed, finalAnswer length: {}",
                 ctx.<String>getVariable("finalAnswer").length());
         return "ok";
     }
 
+    private void evaluateAndRefine(AgentContext ctx, String intent) {
+        if (!"knowledge_qa".equals(intent) && !"multi_intent".equals(intent)) {
+            return;
+        }
+
+        String finalAnswer = ctx.getVariable("finalAnswer", "");
+        if (finalAnswer.isEmpty() || finalAnswer.contains("抱歉，无法处理您的问题")) {
+            return;
+        }
+
+        String userQuery = ctx.getUserQuery();
+
+        for (int i = 0; i < MAX_REACT_LOOPS; i++) {
+            boolean passed = evaluateAnswer(userQuery, finalAnswer);
+            if (passed) {
+                log.info("Final evaluation passed (attempt {})", i + 1);
+                return;
+            }
+
+            if (i < MAX_REACT_LOOPS - 1) {
+                log.info("Final evaluation failed (attempt {}), regenerating", i + 1);
+                String regenerated = regenerateAnswer(userQuery, finalAnswer);
+                if (!regenerated.isEmpty()) {
+                    ctx.setVariable("finalAnswer", regenerated);
+                    finalAnswer = regenerated;
+                } else {
+                    break;
+                }
+            } else {
+                log.warn("Final evaluation failed after {} attempts, outputting as-is", MAX_REACT_LOOPS);
+            }
+        }
+    }
+
+    private boolean evaluateAnswer(String userQuery, String answer) {
+        String prompt = String.format(EVAL_PROMPT, userQuery, answer);
+        try {
+            String result = llm.chat(prompt).trim().toUpperCase();
+            return result.contains("PASS") && !result.contains("FAIL");
+        } catch (Exception e) {
+            log.warn("Final evaluation LLM call failed: {}", e.getMessage());
+            return true;
+        }
+    }
+
+    private String regenerateAnswer(String userQuery, String previousAnswer) {
+        String prompt = """
+                以下回答未能通过质量审核。请根据用户问题重新生成一个更好的回答。
+
+                【用户问题】
+                %s
+
+                【被驳回的回答】
+                %s
+
+                请输出改进后的回答：
+                """.formatted(userQuery, previousAnswer);
+
+        try {
+            return llm.chat(prompt).trim();
+        } catch (Exception e) {
+            log.warn("Answer regeneration failed: {}", e.getMessage());
+            return "";
+        }
+    }
+
     private void executeKnowledgeQa(AgentContext ctx) {
-        log.info("Executing knowledge_qa pipeline: Retriever → Generator ⇄ Reviewer");
+        log.info("Executing knowledge_qa pipeline: Retriever ⇄ Generator (ReAct)");
 
         Agent retriever = findAgent("retriever");
         Agent generator = findAgent("generator");
-        Agent reviewer = findAgent("reviewer");
 
-        if (retriever == null || generator == null || reviewer == null) {
+        if (retriever == null || generator == null) {
             log.error("Missing required agents for knowledge_qa pipeline");
             ctx.setVariable("finalAnswer", "系统配置错误，缺少必要的 Agent。");
             return;
         }
 
-        //执行知识回答流程
-        retriever.execute(ctx);//根据ctx中的query查询文档
-        generator.execute(ctx);//根据检索到的文档生成回答
-        reviewer.execute(ctx);//根据回答生成进行反思
+        String userQuery = ctx.getUserQuery();
 
-        int maxReflectionLoops = 3;// 最大反射循环次数
-        int loop = 0;//当前循环次数
-        // 反思循环：如果回答未通过反思，重新生成回答并反思，最多循环 maxReflectionLoops 次
-        while (!ctx.<Boolean>getVariable("reviewPassed", true) && loop < maxReflectionLoops) {
-            log.info("Reflection loop {}/{}: regenerating answer with critique", loop + 1, maxReflectionLoops);
-            generator.execute(ctx);//根据反思结果重新生成回答
-            reviewer.execute(ctx);//根据新回答生成进行反思
-            loop++;
+        for (int loop = 0; loop < MAX_REACT_LOOPS; loop++) {
+            log.info("ReAct loop {}/{}: {}", loop + 1, MAX_REACT_LOOPS,
+                    loop == 0 ? "initial retrieval" : "re-retrieval with rewritten query");
+
+            retriever.execute(ctx);
+            generator.execute(ctx);
+
+            String answer = ctx.getVariable("answer", "");
+
+            if (isAnswerSufficient(answer)) {
+                log.info("ReAct loop {}/{}: answer sufficient, stopping", loop + 1, MAX_REACT_LOOPS);
+                break;
+            }
+
+            if (loop < MAX_REACT_LOOPS - 1) {
+                log.info("ReAct loop {}/{}: answer insufficient, rewriting query for better retrieval", loop + 1, MAX_REACT_LOOPS);
+                String rewritten = rewriteQueryForReAct(userQuery, answer);
+                ctx.setVariable("subQueries", List.of(rewritten));
+                ctx.removeVariable("answer");
+                ctx.removeVariable("documents");
+                ctx.removeVariable("retrievedContext");
+            }
+        }
+    }
+
+    private boolean isAnswerSufficient(String answer) {
+        if (answer == null || answer.isEmpty()) {
+            return false;
+        }
+        String lower = answer.toLowerCase();
+        return !lower.contains("未检索到")
+                && !lower.contains("知识库中未检索到")
+                && !lower.contains("没有找到相关")
+                && !lower.contains("无法找到");
+    }
+
+    private String rewriteQueryForReAct(String originalQuery, String failedAnswer) {
+        String prompt = """
+                以下是用户问题和系统未能充分回答的回答。请将用户问题改写为更精准的检索查询，
+                以便从知识库中检索到更相关的文档。
+
+                【用户问题】
+                %s
+
+                【系统回答（不充分）】
+                %s
+
+                请只输出改写后的检索查询（一行，不要任何解释）：
+                """.formatted(originalQuery, failedAnswer);
+
+        try {
+            String rewritten = llm.chat(prompt).trim();
+            log.info("ReAct query rewritten: '{}' → '{}'", originalQuery, rewritten);
+            return rewritten.isEmpty() ? originalQuery : rewritten;
+        } catch (Exception e) {
+            log.warn("ReAct query rewrite failed: {}", e.getMessage());
+            return originalQuery;
         }
     }
 
@@ -135,7 +285,19 @@ public class OrchestratorAgent implements Orchestrator {
         log.info("Executing chitchat pipeline: Generator only");
         Agent generator = findAgent("generator");
         if (generator != null) {
-            generator.execute(ctx);//根据ctx中的query生成回答
+            generator.execute(ctx);
+            ctx.setVariable("finalAnswer", ctx.getVariable("answer"));
+        }
+    }
+
+    /**
+     * 执行天气查询流程
+     */
+    private void executeWeather(AgentContext ctx) {
+        log.info("Executing weather pipeline: WeatherAgent (MCP)");
+        Agent weather = findAgent("weather");
+        if (weather != null) {
+            weather.execute(ctx);
             ctx.setVariable("finalAnswer", ctx.getVariable("answer"));
         }
     }
@@ -175,6 +337,7 @@ public class OrchestratorAgent implements Orchestrator {
             switch (task.intent()) {
                 case "knowledge_qa" -> executeKnowledgeQa(ctx);
                 case "chitchat" -> executeChitchat(ctx);
+                case "weather" -> executeWeather(ctx);
                 case "doc_ingestion" -> executeDocIngestion(ctx);
                 default -> executeKnowledgeQa(ctx);
             }

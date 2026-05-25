@@ -32,7 +32,7 @@ public class VectorRecallStrategyImpl implements RecallStrategy {
     public List<Chunk> recall(String query, int topK) {
         float[] queryVector = embeddingService.embed(query);
         List<Chunk> results = vectorStore.knnSearch(queryVector, topK);
-        log.debug("Vector recall [{}] returned {} chunks for query: {}", name(), results.size(), query);
+        log.info("Vector recall [{}] returned {} chunks for query: {}", name(), results.size(), query);
         return results;
     }
 }

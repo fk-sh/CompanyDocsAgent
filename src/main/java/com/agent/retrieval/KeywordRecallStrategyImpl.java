@@ -28,7 +28,7 @@ public class KeywordRecallStrategyImpl implements RecallStrategy {
     // 实现 BM25 关键词召回策略
     public List<Chunk> recall(String query, int topK) {
         List<Chunk> results = vectorStore.bm25Search(query, topK);
-        log.debug("Keyword recall [{}] returned {} chunks for query: {}", name(), results.size(), query);
+        log.info("Keyword recall [{}] returned {} chunks for query: {}", name(), results.size(), query);
         return results;
     }
 }

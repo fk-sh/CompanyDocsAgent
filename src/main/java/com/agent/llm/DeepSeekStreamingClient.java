@@ -45,31 +45,36 @@ public class DeepSeekStreamingClient {
      */
     public Flux<String> stream(String systemPrompt, String userMessage) {
         log.debug("stream request: {}", userMessage);
-        // 创建一个 Sinks.Many 实例，用于接收流式输出
-        Sinks.Many<String> sink = Sinks.many().unicast().onBackpressureBuffer();
-
-        // 构建消息列表，包含系统提示词和用户输入
         var messages = new java.util.ArrayList<dev.langchain4j.data.message.ChatMessage>();
         if (systemPrompt != null && !systemPrompt.isBlank()) {
             messages.add(SystemMessage.from(systemPrompt));
         }
         messages.add(UserMessage.from(userMessage));
+        return doStream(messages);
+    }
 
-        // 调用流式模型生成回复
+    public Flux<String> streamRaw(String prompt) {
+        log.debug("streamRaw request, prompt length: {}", prompt.length());
+        var messages = java.util.List.<dev.langchain4j.data.message.ChatMessage>of(
+                UserMessage.from(prompt));
+        return doStream(messages);
+    }
+
+    private Flux<String> doStream(java.util.List<dev.langchain4j.data.message.ChatMessage> messages) {
+        Sinks.Many<String> sink = Sinks.many().unicast().onBackpressureBuffer();
+
         model.generate(messages, new dev.langchain4j.model.StreamingResponseHandler<>() {
             @Override
             public void onNext(String token) {
                 sink.tryEmitNext(token);
             }
 
-            // 流式输出完成时调用
             @Override
             public void onComplete(dev.langchain4j.model.output.Response<AiMessage> response) {
                 log.debug("stream complete");
                 sink.tryEmitComplete();
             }
 
-            // 流式输出错误时调用
             @Override
             public void onError(Throwable error) {
                 log.error("stream error", error);

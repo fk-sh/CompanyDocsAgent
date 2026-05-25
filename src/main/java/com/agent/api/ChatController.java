@@ -3,13 +3,19 @@ package com.agent.api;
 import com.agent.api.dto.ChatRequest;
 import com.agent.api.dto.ChatResponse;
 import com.agent.api.dto.DocumentResponse;
+import com.agent.agent.GeneratorAgent;
+import com.agent.agent.IngestionAgent;
+import com.agent.agent.RouterAgent;
+import com.agent.agent.WeatherAgent;
 import com.agent.core.Agent;
 import com.agent.core.AgentContext;
 import com.agent.core.Chunk;
+import com.agent.agent.RetrieverAgent;
 import com.agent.ingestion.FullIngestionPipeline;
 import com.agent.llm.DeepSeekStreamingClient;
 import com.agent.memory.MemoryManager;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.http.MediaType;
 import org.springframework.web.bind.annotation.DeleteMapping;
@@ -41,16 +47,31 @@ import java.util.concurrent.ConcurrentHashMap;
 public class ChatController {
 
     private final Agent orchestratorAgent;
+    private final GeneratorAgent generatorAgent;
+    private final RouterAgent routerAgent;
+    private final RetrieverAgent retrieverAgent;
+    private final WeatherAgent weatherAgent;
     private final MemoryManager memoryManager;
     private final DeepSeekStreamingClient streamingClient;
 
     private final Map<String, Map<String, Object>> documentStore = new ConcurrentHashMap<>();
     private final Map<String, Map<String, Object>> feedbackStore = new ConcurrentHashMap<>();
 
+    @Autowired(required = false)
+    private IngestionAgent ingestionAgent;
+
     public ChatController(@Qualifier("orchestratorAgent") Agent orchestratorAgent,
+                          GeneratorAgent generatorAgent,
+                          RouterAgent routerAgent,
+                          RetrieverAgent retrieverAgent,
+                          WeatherAgent weatherAgent,
                           MemoryManager memoryManager,
                           DeepSeekStreamingClient streamingClient) {
         this.orchestratorAgent = orchestratorAgent;
+        this.generatorAgent = generatorAgent;
+        this.routerAgent = routerAgent;
+        this.retrieverAgent = retrieverAgent;
+        this.weatherAgent = weatherAgent;
         this.memoryManager = memoryManager;
         this.streamingClient = streamingClient;
     }
@@ -109,14 +130,37 @@ public class ChatController {
 
         memoryManager.saveUserMessage(sid, query);
 
-        return Flux.concat(
-                Flux.just("event: session\n" + "data: " + sid + "\n\n"),
-                streamingClient.stream(query)
-                        .doOnComplete(() -> {
-                            log.info("Stream completed for session={}", sid);
-                        })
-                        .doOnError(e -> log.error("Stream error for session={}: {}", sid, e.getMessage()))
-        );
+        AgentContext ctx = memoryManager.buildContext(sid, query);
+
+        routerAgent.execute(ctx);
+        String intent = ctx.getVariable("intent", "knowledge_qa");
+        log.info("chatStream intent: {}", intent);
+
+        if ("weather".equals(intent)) {
+            weatherAgent.execute(ctx);
+            String answer = ctx.getVariable("finalAnswer", "");
+            if (answer.isEmpty()) {
+                answer = ctx.getVariable("answer", "抱歉，无法处理您的问题。");
+            }
+            memoryManager.saveAssistantMessage(sid, answer);
+            return Flux.just(answer);
+        }
+
+        ctx.setVariable("intent", intent);
+        if ("knowledge_qa".equals(intent) || "multi_intent".equals(intent)) {
+            retrieverAgent.execute(ctx);
+        }
+
+        String finalSid = sid;
+        return generatorAgent.executeStream(ctx)
+                .doOnComplete(() -> {
+                    String answer = ctx.getVariable("answer", "");
+                    if (!answer.isEmpty()) {
+                        memoryManager.saveAssistantMessage(finalSid, answer);
+                    }
+                    log.info("Stream completed for session={}", finalSid);
+                })
+                .doOnError(e -> log.error("Stream error for session={}: {}", finalSid, e.getMessage()));
     }
 
     @PostMapping("/documents/upload")
@@ -145,17 +189,21 @@ public class ChatController {
 
             documentStore.put(documentId, docInfo);
 
-            AgentContext ctx = new AgentContext("ingest-" + taskId, "");
-            ctx.setVariable("filePath", tempFile.toString());
-            ctx.setVariable("intent", "doc_ingestion");
-            ctx.setVariable("taskId", taskId);
-            orchestratorAgent.execute(ctx);
+            if (ingestionAgent != null) {
+                AgentContext ctx = new AgentContext("ingest-" + taskId, "");
+                ctx.setVariable("filePath", tempFile.toString());
+                ctx.setVariable("taskId", taskId);
+                ingestionAgent.execute(ctx);
 
-            String ingestionStatus = ctx.getVariable("ingestionStatus", "PROCESSING");
-            docInfo.put("status", ingestionStatus);
-            documentStore.put(documentId, docInfo);
+                String ingestionStatus = ctx.getVariable("ingestionStatus", "PROCESSING");
+                docInfo.put("status", ingestionStatus);
+                documentStore.put(documentId, docInfo);
 
-            log.info("Document {} ingestion status: {}", documentId, ingestionStatus);
+                log.info("Document {} ingestion status: {}", documentId, ingestionStatus);
+            } else {
+                docInfo.put("status", "SKIPPED: IngestionAgent not available");
+                log.warn("IngestionAgent not available, skipping ingestion for document {}", documentId);
+            }
 
         } catch (IOException e) {
             log.error("Document upload failed: {}", e.getMessage());

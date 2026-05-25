@@ -2,7 +2,7 @@ package com.agent.service;
 
 import com.agent.core.Message;
 import com.agent.llm.DeepSeekChatClient;
-import com.agent.mcp.McpClient;
+import com.agent.mcp.AgentMcpClient;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -18,7 +18,7 @@ import java.util.regex.Pattern;
  * <p>
  * 核心思路（ReAct 循环）：
  * <ol>
- *   <li>通过 {@link McpClient} 发现所有 MCP 工具，生成工具描述注入 System Prompt</li>
+ *   <li>通过 {@link AgentMcpClient} 发现所有 MCP 工具，生成工具描述注入 System Prompt</li>
  *   <li>LLM 看到工具列表后，自主决定是否需要调用、调用哪个工具</li>
  *   <li>如果 LLM 输出工具调用指令，执行之并将结果喂回 LLM</li>
  *   <li>LLM 根据工具结果生成最终答案</li>
@@ -31,7 +31,7 @@ import java.util.regex.Pattern;
 public class McpAwareChatService {
 
     private final DeepSeekChatClient llm;
-    private final McpClient mcpClient;
+    private final AgentMcpClient mcpClient;
     private final ObjectMapper objectMapper;
 
     private static final Pattern TOOL_CALL_PATTERN = Pattern.compile(
@@ -41,7 +41,7 @@ public class McpAwareChatService {
 
     private static final int MAX_LOOPS = 5;
 
-    public McpAwareChatService(DeepSeekChatClient llm, McpClient mcpClient, ObjectMapper objectMapper) {
+    public McpAwareChatService(DeepSeekChatClient llm, AgentMcpClient mcpClient, ObjectMapper objectMapper) {
         this.llm = llm;
         this.mcpClient = mcpClient;
         this.objectMapper = objectMapper;
