@@ -2,9 +2,8 @@ package com.agent.agent;
 
 import com.agent.core.Agent;
 import com.agent.core.AgentContext;
-import com.agent.core.AgentSkill;
-import com.agent.core.AgentSkill.VariableDef;
 import com.agent.core.Chunk;
+import com.agent.llm.DeepSeekChatClient;
 import com.agent.retrieval.HybridRetriever;
 import com.agent.retrieval.QueryRewriterImpl;
 import lombok.extern.slf4j.Slf4j;
@@ -12,28 +11,48 @@ import org.springframework.stereotype.Component;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Set;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
-/**
- * 检索召回 Agent，执行 Query 改写 → 多路召回 → 粗排 → 精排 的完整检索链路。
- * <p>
- * 执行模式：支持 ReAct 循环，LLM 可自主判断检索结果是否充分，
- * 不足时自动改写 Query 重新检索，最多循环 3 次。
- * <p>
- * 输入（ctx 读取）：subQueries
- * 输出（ctx 写入）：documents, retrievedContext
- */
 @Slf4j
 @Component("retrieverAgent")
 public class RetrieverAgent implements Agent {
 
-    private static final int MAX_REACT_LOOPS = 3;//最大循环次数
+    private static final int MIN_CHUNKS = 5;
+    private static final int MAX_REACT_LOOPS = 2;
+
+    private static final String REACT_PROMPT = """
+            你是一个检索结果分析助手。以下是从知识库检索到的文档内容，请判断是否足以回答用户问题。
+            如果不足，请生成一个新的检索查询以补充缺失的信息。
+
+            【用户问题】
+            %s
+
+            【当前检索到的文档内容】
+            %s
+
+            请分析：
+            1. 当前检索结果是否足够？如果足够，回复 SUFFICIENT
+            2. 如果不足，请指出缺失了哪方面的信息，并回复新的检索查询（只输出一个查询语句）
+
+            回复格式：
+            SUFFICIENT
+            或：直接输出新的检索查询（一行）
+            """;
 
     private final HybridRetriever hybridRetriever;
     private final QueryRewriterImpl queryRewriter;
+    private final DeepSeekChatClient llm;
+    private final ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
 
-    public RetrieverAgent(HybridRetriever hybridRetriever, QueryRewriterImpl queryRewriter) {
+    public RetrieverAgent(HybridRetriever hybridRetriever, QueryRewriterImpl queryRewriter,
+                          DeepSeekChatClient llm) {
         this.hybridRetriever = hybridRetriever;
         this.queryRewriter = queryRewriter;
+        this.llm = llm;
     }
 
     @Override
@@ -41,129 +60,137 @@ public class RetrieverAgent implements Agent {
         return "retriever";
     }
 
-    @Override
-    public AgentSkill skill() {
-        return new AgentSkill(
-                "retriever",
-                "文档检索召回：对查询语句进行多路召回（BM25 + 向量）→ 粗排 → 精排，返回 TopK 文档片段",
-                List.of(
-                        VariableDef.input("subQueries", "List<String>", "待检索的查询语句列表")
-                ),
-                List.of(
-                        VariableDef.output("documents", "List<Chunk>", "检索到的文档片段列表"),
-                        VariableDef.output("retrievedContext", "String", "拼接好的文档上下文文本")
-                )
-        );
+    public String retrieve(AgentContext ctx, List<String> queries) {
+        return retrieve(queries);
     }
 
-    /**
-     * 执行检索召回链路。
-     * <p>
-     * 从 ctx 中获取子任务查询语句，递归执行 ReAct 循环，直到检索到足够多的文档或超过最大循环次数。
-     * <p>
-     * 最终返回所有子任务的文档合并结果。
-     */
-    @Override
-    public String execute(AgentContext ctx) {
-        List<String> subQueries = ctx.getVariable("subQueries");//从ctx中获取子任务查询语句
-        if (subQueries == null || subQueries.isEmpty()) {
-            log.warn("RetrieverAgent: no subQueries found, using userQuery as fallback");
-            String fallback = ctx.getUserQuery();//用 ctx 对象的 userQuery 字段
-            if (fallback == null || fallback.isEmpty()) {
-                fallback = ctx.getVariable("userQuery");// 第三优先级：从 variables Map 里翻 userQuery
+    public String retrieve(List<String> queries) {
+        if (queries == null || queries.isEmpty()) {
+            return "";
+        }
+
+        ConcurrentLinkedQueue<Chunk> allChunks = new ConcurrentLinkedQueue<>();
+
+        List<CompletableFuture<Void>> futures = new ArrayList<>();
+        for (String query : queries) {
+            futures.add(CompletableFuture.runAsync(() -> {
+                List<Chunk> roundChunks = retrieveWithPipeline(query);
+                allChunks.addAll(roundChunks);
+            }, executor));
+        }
+
+        for (CompletableFuture<Void> future : futures) {
+            try {
+                future.join();
+            } catch (Exception e) {
+                log.warn("RetrieverAgent: query retrieval failed: {}", e.getMessage());
             }
-            subQueries = List.of(fallback);
         }
 
-        log.info("RetrieverAgent processing {} sub-queries", subQueries.size());
-
-        List<Chunk> allChunks = new ArrayList<>();
-
-        for (String query : subQueries) {
-            List<Chunk> chunks = retrieveWithReAct(query, MAX_REACT_LOOPS);
-            allChunks.addAll(chunks);
+        Set<String> seen = new java.util.HashSet<>();
+        List<Chunk> deduplicated = new ArrayList<>();
+        for (Chunk c : allChunks) {
+            if (seen.add(c.getId())) {
+                deduplicated.add(c);
+            }
         }
 
-        List<Chunk> deduplicated = deduplicate(allChunks);
-        ctx.setVariable("documents", deduplicated);
+        log.info("RetrieverAgent initial retrieval: {} chunks from {} queries", deduplicated.size(), queries.size());
 
-        String retrievedContext = buildContextText(deduplicated);
-        ctx.setVariable("retrievedContext", retrievedContext);
+        int reactLoop = 0;
+        while (deduplicated.size() < MIN_CHUNKS && reactLoop < MAX_REACT_LOOPS) {
+            reactLoop++;
+            log.info("RetrieverAgent ReAct loop {}/{}: only {} chunks (need {})",
+                    reactLoop, MAX_REACT_LOOPS, deduplicated.size(), MIN_CHUNKS);
 
-        log.info("RetrieverAgent completed: {} unique chunks retrieved", deduplicated.size());
-        return "retrieved " + deduplicated.size() + " chunks";
-    }
+            String newQuery = generateReActQuery(queries.get(0), deduplicated);
+            if (newQuery == null || newQuery.isEmpty()) {
+                log.info("RetrieverAgent ReAct: LLM thinks results are sufficient");
+                break;
+            }
 
-    /**
-     * 递归执行 ReAct 循环，直到检索到足够多的文档或超过最大循环次数。
-     * <p>
-     * 每次循环会根据 LLM 的判断，自动改写 Query 并重新检索。
-     * 如果改写后的 Query 无法满足需求，会继续改写，最多循环 3 次。
-     * <p>
-     * 如果改写后的 Query 包含多个子任务，会递归执行本方法，每个子任务都执行一次 ReAct 循环。
-     * <p>
-     * 最终返回所有子任务的文档合并结果。
-     */
-    private List<Chunk> retrieveWithReAct(String query, int remainingLoops) {
-        if (remainingLoops <= 0) {
-            return hybridRetriever.retrieve(query);//如果剩余循环次数为 0，直接返回检索结果
-               }
-
-        List<Chunk> chunks = hybridRetriever.retrieve(query);//执行检索
-
-        if (chunks.size() < 3 && remainingLoops > 1) {
-            log.info("RetrieverAgent ReAct loop: only {} chunks found, rewriting query", chunks.size());
-            QueryRewriterImpl.RewriteResult rewritten = queryRewriter.rewrite(query);//改写查询
-            if (rewritten.type() == QueryRewriterImpl.RewriteResult.Type.DECOMPOSE) {
-                List<Chunk> allChunks = new ArrayList<>(chunks);//初始化所有文档列表
-                for (String subQuery : rewritten.subQueries()) {
-                    allChunks.addAll(retrieveWithReAct(subQuery, remainingLoops - 1));//递归执行本方法，每个子任务都执行一次 ReAct 循环
+            List<Chunk> moreChunks = retrieveWithPipeline(newQuery);
+            for (Chunk c : moreChunks) {
+                if (seen.add(c.getId())) {
+                    deduplicated.add(c);
                 }
-                return allChunks;
-            } else {
-                String newQuery = rewritten.getEffectiveQueries().getFirst();//获取第一个有效查询语句
-                //如果改写后的 Query 包含多个子任务，会递归执行本方法，每个子任务都执行一次 ReAct 循环
-                List<Chunk> moreChunks = retrieveWithReAct(newQuery, remainingLoops - 1);//递归执行本方法，每个子任务都执行一次 ReAct 循环
-                List<Chunk> combined = new ArrayList<>(chunks);//初始化合并文档列表
-                combined.addAll(moreChunks);//合并所有子任务的文档到合并文档列表
-                return combined;
+            }
+            log.info("RetrieverAgent ReAct loop {}: added {} more chunks, total={}",
+                    reactLoop, moreChunks.size(), deduplicated.size());
+        }
+
+        return buildContextText(deduplicated);
+    }
+
+    private List<Chunk> retrieveWithPipeline(String query) {
+        var rewritten = queryRewriter.rewrite(query);
+
+        List<String> variants = new ArrayList<>();
+        variants.add(query);
+        variants.addAll(rewritten.getEffectiveQueries());
+
+        List<String> rewrittenQueries = rewritten.getEffectiveQueries();
+        List<CompletableFuture<List<String>>> expandFutures = new ArrayList<>();
+        for (String q : rewrittenQueries) {
+            expandFutures.add(CompletableFuture.supplyAsync(() -> {
+                try {
+                    return queryRewriter.expand(q);
+                } catch (Exception e) {
+                    log.warn("RetrieverAgent: expand '{}' failed: {}", q, e.getMessage());
+                    return List.<String>of();
+                }
+            }, executor));
+        }
+
+        for (CompletableFuture<List<String>> future : expandFutures) {
+            try {
+                List<String> expanded = future.join();
+                variants.addAll(expanded);
+            } catch (Exception e) {
+                log.warn("RetrieverAgent: expand future failed: {}", e.getMessage());
             }
         }
 
-        return chunks;
+        List<String> uniqueVariants = new ArrayList<>(new java.util.LinkedHashSet<>(variants));
+        log.debug("RetrieverAgent: query expanded to {} variants", uniqueVariants.size());
+
+        return hybridRetriever.retrieveWithQueries(query, uniqueVariants, 10);
     }
 
-    /**
-     * 去重，保留每个文档 ID 的第一个出现。
-     * <p>
-     * 用于合并所有子任务的文档时，避免重复。
-     */
-    private List<Chunk> deduplicate(List<Chunk> chunks) {
-        List<Chunk> unique = new ArrayList<>();
-        java.util.Set<String> seen = new java.util.HashSet<>();
-        for (Chunk chunk : chunks) {
-            if (seen.add(chunk.getId())) {
-                unique.add(chunk);
+    private String generateReActQuery(String originalQuery, List<Chunk> currentChunks) {
+        String contextText = buildContextText(currentChunks);
+        String prompt = String.format(REACT_PROMPT, originalQuery, contextText);
+
+        try {
+            String response = llm.chat(prompt).trim();
+            if (response.equalsIgnoreCase("SUFFICIENT") || response.isEmpty()) {
+                return null;
             }
+            log.debug("RetrieverAgent ReAct: new query='{}'", response);
+            return response;
+        } catch (Exception e) {
+            log.warn("RetrieverAgent ReAct: LLM call failed: {}", e.getMessage());
+            return null;
         }
-        return unique;
     }
 
-    /**
-     * 构建上下文文本，用于生成答案。
-     * <p>
-     * 每个文档内容前添加 [来源 N] 标注，N 为文档在列表中的索引。防止AI编造没有的内容。
-     * <p>
-     * 最终返回一个包含所有文档内容的字符串。
-     */
     private String buildContextText(List<Chunk> chunks) {
+        if (chunks.isEmpty()) {
+            return "（无检索结果）";
+        }
         StringBuilder sb = new StringBuilder();
         for (int i = 0; i < chunks.size(); i++) {
             Chunk chunk = chunks.get(i);
-            sb.append("[来源 ").append(i + 1).append("] ");
+            String fileName = (String) chunk.getMetadata().getOrDefault("fileName", "未知文档");
+            sb.append("\n\n[来源 ").append(i + 1).append(": ").append(fileName).append("]\n");
             sb.append(chunk.getContent());
-            sb.append("\n---\n");
+            sb.append("\n\n---\n\n");
         }
         return sb.toString();
+    }
+
+    @Override
+    public String execute(AgentContext ctx) {
+        return "retriever agent executed";
     }
 }

@@ -13,12 +13,11 @@ import reactor.core.publisher.Flux;
  * <p>
  * 支持三种执行模式（在实现类中体现）：
  * <ul>
- *   <li><b>Plan and Execute</b>：宏观管道，分支固定（如 OrchestratorAgent）</li>
- *   <li><b>ReAct</b>：Think → Act → Observe 循环（如 RetrieverAgent、GeneratorAgent）</li>
- *   <li><b>Reflection</b>：生成 → 审阅批评 → 重写（如 ReviewerAgent + GeneratorAgent）</li>
+ *   <li><b>ReAct</b>：Think → Act → Observe 循环（在 OrchestratorAgent 中实现）</li>
+ *   <li><b>Plan and Execute</b>：宏观调度，LLM 自主决策调用工具</li>
+ *   <li><b>Reflection</b>：生成 → 审阅批评 → 重写</li>
  * </ul>
  *
- * @see Orchestrator
  * @see AgentContext
  * @see AgentSkill
  */

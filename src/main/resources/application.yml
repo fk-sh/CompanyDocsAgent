@@ -6,9 +6,17 @@ spring:
   web:
     locale: zh_CN
     locale-resolver: fixed
+    resources:
+      cache:
+        period: 0
+      static-locations: classpath:/static/
   autoconfigure:
     exclude:
       - dev.langchain4j.spring.LangChain4jAutoConfig
+  servlet:
+    multipart:
+      max-file-size: 10MB
+      max-request-size: 50MB
 
 server:
   port: 8080

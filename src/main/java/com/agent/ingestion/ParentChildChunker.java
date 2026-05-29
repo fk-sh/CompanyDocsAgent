@@ -32,6 +32,8 @@ public class ParentChildChunker {
     private static final int CHILD_CHUNK_SIZE = 512;
     private static final int PARENT_CHUNK_SIZE = 2048;
     private static final int OVERLAP = 64;
+    private static final int PARAGRAPH_LOOKBACK = 512;
+    private static final float ATOMIC_BLOCK_OVERFLOW_RATIO = 1.3f;
 
     private final HierarchicalChunker hierarchicalChunker;
 
@@ -47,15 +49,19 @@ public class ParentChildChunker {
      * @return 子 Chunk + 父 Chunk 的合集，子 Chunk 已通过 parentChunkId 指向父 Chunk
      */
     public List<Chunk> chunk(String documentId, List<ContentBlock> blocks) {
+        log.info("ParentChildChunker.chunk() called with {} blocks for document {}", blocks.size(), documentId);
         List<Chunk> allChunks = new ArrayList<>();
 
         // 第 1 步：拼接 ContentBlock → 父 Chunk（同时记录每个父 Chunk 由哪些 ContentBlock 组成）
+        log.info("Building parent chunks...");
         List<ParentWithBlocks> parentsWithBlocks = buildParentChunks(documentId, blocks);
+        log.info("Built {} parent chunks", parentsWithBlocks.size());
         for (ParentWithBlocks pwb : parentsWithBlocks) {
             allChunks.add(pwb.parent);// 添加当前父 Chunk 到结果列表
         }
 
         // 第 2 步：每个父 Chunk 内部用滑动窗口拆分为子 Chunk
+        log.info("Splitting parents into children...");
         int childIndex = 0;
         for (ParentWithBlocks pwb : parentsWithBlocks) {
             List<Chunk> children = splitParentIntoChildren(pwb, documentId, childIndex);
@@ -99,17 +105,11 @@ public class ParentChildChunker {
             return result;
         }
 
-        // buffer: 累积当前父 Chunk 的文本内容
         StringBuilder buffer = new StringBuilder();
-        // currentBlocks: 当前父 Chunk 包含的 ContentBlock 列表
         List<ContentBlock> currentBlocks = new ArrayList<>();
-        // currentRanges: 每个 ContentBlock 在 buffer 中的 [start, end) 偏移范围
         List<int[]> currentRanges = new ArrayList<>();
-        // parentIndex: 父 Chunk 的序号，用于生成 parentIndex 元数据
         int parentIndex = 0;
-        // currentSection: 当前章节标题，用于检测章节切换边界
         String currentSection = "";
-        // parentGlobalStart: 当前父 Chunk 在整个文档中的起始偏移
         int parentGlobalStart = 0;
 
         for (ContentBlock block : blocks) {
@@ -117,63 +117,150 @@ public class ParentChildChunker {
                 continue;
             }
 
-            String section = block.getSectionTitle();// 获取当前块的章节标题
-            // 过滤无章节的块
+            String section = block.getSectionTitle();
             String content = block.getContent();
 
             if (buffer.length() == 0) {
                 parentGlobalStart = block.getStartOffset();
             }
 
-            // 条件 1：章节切换边界
             if (section != null && !section.isEmpty()
                     && !section.equals(currentSection) && buffer.length() > 0) {
-                result.add(buildParentWithBlocks(documentId, buffer.toString(),
-                        parentIndex++, parentGlobalStart, currentBlocks, currentRanges));// 生成当前父 Chunk
-                // 重置当前父 Chunk 的数据，准备生成下一个父 Chunk
-                buffer = new StringBuilder();
-                currentBlocks = new ArrayList<>();
-                currentRanges = new ArrayList<>();
+                flushParentBuffer(documentId, result, buffer, currentBlocks, currentRanges,
+                        parentIndex++, parentGlobalStart);
+                parentGlobalStart = block.getStartOffset();
             }
 
-            // 更新当前章节标题
-            // 过滤无章节的块
             currentSection = (section != null && !section.isEmpty()) ? section : currentSection;
             if (buffer.length() == 0) {
-                // 重置当前父 Chunk 的起始偏移
                 parentGlobalStart = block.getStartOffset();
             }
 
-            // 条件 2：大小超限
-            // 如果当前父 Chunk 大小超过阈值，且不是第一个块，就生成当前父 Chunk
-            if (buffer.length() + content.length() > PARENT_CHUNK_SIZE && buffer.length() > 0) {
-                result.add(buildParentWithBlocks(documentId, buffer.toString(),
-                        parentIndex++, parentGlobalStart, currentBlocks, currentRanges));
-                buffer = new StringBuilder();
-                currentBlocks = new ArrayList<>();
-                currentRanges = new ArrayList<>();
+            boolean isAtomic = block.getType() == ContentType.CODE
+                    || block.getType() == ContentType.TABLE;
+
+            if (isAtomic && buffer.length() > 0
+                    && buffer.length() + content.length() > PARENT_CHUNK_SIZE * ATOMIC_BLOCK_OVERFLOW_RATIO) {
+                flushParentBuffer(documentId, result, buffer, currentBlocks, currentRanges,
+                        parentIndex++, parentGlobalStart);
                 parentGlobalStart = block.getStartOffset();
+                currentSection = (section != null && !section.isEmpty()) ? section : "";
             }
 
-            // 追加内容（非首个块前加 \n\n 分隔），同时记录偏移范围
             int blockLocalStart = buffer.length();
             if (buffer.length() > 0) {
                 buffer.append("\n\n");
-                blockLocalStart = buffer.length();  // 分隔符之后才是 block 内容的开始
+                blockLocalStart = buffer.length();
             }
             buffer.append(content);
 
             currentBlocks.add(block);
             currentRanges.add(new int[]{blockLocalStart, blockLocalStart + content.length()});
+
+            while (buffer.length() > PARENT_CHUNK_SIZE) {
+                int splitPos = findParagraphSplitPosition(buffer.toString());
+                if (splitPos > 0 && splitPos < buffer.length()) {
+                    splitParentAtParagraph(documentId, result, buffer, currentBlocks, currentRanges,
+                            parentIndex++, parentGlobalStart, splitPos);
+                    parentGlobalStart += splitPos;
+                } else {
+                    flushParentBuffer(documentId, result, buffer, currentBlocks, currentRanges,
+                            parentIndex++, parentGlobalStart);
+                    parentGlobalStart += PARENT_CHUNK_SIZE;
+                    break;
+                }
+            }
         }
 
-        // 末尾剩余
         if (buffer.length() > 0) {
-            result.add(buildParentWithBlocks(documentId, buffer.toString(),
-                    parentIndex++, parentGlobalStart, currentBlocks, currentRanges));
+            flushParentBuffer(documentId, result, buffer, currentBlocks, currentRanges,
+                    parentIndex++, parentGlobalStart);
         }
 
         return result;
+    }
+
+    private int findParagraphSplitPosition(String text) {
+        int searchStart = Math.max(0, PARENT_CHUNK_SIZE - PARAGRAPH_LOOKBACK);
+        int searchEnd = Math.min(text.length(), PARENT_CHUNK_SIZE);
+        int lastBoundary = -1;
+        int pos = searchStart;
+        while (pos < searchEnd) {
+            int idx = text.indexOf("\n\n", pos);
+            if (idx == -1 || idx >= searchEnd) {
+                break;
+            }
+            lastBoundary = idx + 2;
+            pos = idx + 2;
+        }
+        if (lastBoundary > 0) {
+            return lastBoundary;
+        }
+        pos = searchStart;
+        while (pos < searchEnd) {
+            int idx = text.indexOf("\n", pos);
+            if (idx == -1 || idx >= searchEnd) {
+                break;
+            }
+            lastBoundary = idx + 1;
+            pos = idx + 1;
+        }
+        return lastBoundary > 0 ? lastBoundary : -1;
+    }
+
+    private void splitParentAtParagraph(String documentId, List<ParentWithBlocks> result,
+                                         StringBuilder buffer,
+                                         List<ContentBlock> currentBlocks,
+                                         List<int[]> currentRanges,
+                                         int parentIndex, int globalStart, int splitPos) {
+        String parentText = buffer.substring(0, splitPos);
+        String remaining = buffer.substring(splitPos);
+
+        List<ContentBlock> parentBlocks = new ArrayList<>();
+        List<int[]> parentRanges = new ArrayList<>();
+        List<ContentBlock> remainBlocks = new ArrayList<>();
+        List<int[]> remainRanges = new ArrayList<>();
+
+        for (int i = 0; i < currentRanges.size(); i++) {
+            int[] range = currentRanges.get(i);
+            if (range[1] <= splitPos) {
+                parentBlocks.add(currentBlocks.get(i));
+                parentRanges.add(range);
+            } else if (range[0] >= splitPos) {
+                remainBlocks.add(currentBlocks.get(i));
+                remainRanges.add(new int[]{range[0] - splitPos, range[1] - splitPos});
+            } else {
+                parentBlocks.add(currentBlocks.get(i));
+                parentRanges.add(new int[]{range[0], splitPos});
+                remainBlocks.add(currentBlocks.get(i));
+                remainRanges.add(new int[]{0, range[1] - splitPos});
+            }
+        }
+
+        result.add(buildParentWithBlocks(documentId, parentText, parentIndex, globalStart,
+                parentBlocks, parentRanges));
+
+        buffer.setLength(0);
+        buffer.append(remaining);
+        currentBlocks.clear();
+        currentBlocks.addAll(remainBlocks);
+        currentRanges.clear();
+        currentRanges.addAll(remainRanges);
+    }
+
+    private void flushParentBuffer(String documentId, List<ParentWithBlocks> result,
+                                    StringBuilder buffer,
+                                    List<ContentBlock> currentBlocks,
+                                    List<int[]> currentRanges,
+                                    int parentIndex, int globalStart) {
+        if (buffer.length() == 0) {
+            return;
+        }
+        result.add(buildParentWithBlocks(documentId, buffer.toString(), parentIndex, globalStart,
+                currentBlocks, currentRanges));
+        buffer.setLength(0);
+        currentBlocks.clear();
+        currentRanges.clear();
     }
 
     private ParentWithBlocks buildParentWithBlocks(String documentId, String content, int index,
@@ -185,7 +272,7 @@ public class ParentChildChunker {
                 documentId,
                 content,
                 Chunk.ContentType.TEXT,
-                -1  //-1代表以后进行向量化的时候不会以向量的形式存储进向量数据库，只是作为文本进行存储，不会被向量化
+                -1
         );
         parent.setStartOffset(startOffset);
         parent.setEndOffset(startOffset + content.length());
@@ -214,8 +301,17 @@ public class ParentChildChunker {
         String parentId = parent.getId();
         int baseOffset = parent.getStartOffset();
 
-        List<String> segments = hierarchicalChunker.splitWithOverlap(
-                parentContent, CHILD_CHUNK_SIZE, OVERLAP);
+        boolean hasCode = pwb.blocks.stream().anyMatch(b -> b.getType() == ContentType.CODE);
+        boolean hasTable = pwb.blocks.stream().anyMatch(b -> b.getType() == ContentType.TABLE);
+
+        List<String> segments;
+        if (hasCode || hasTable) {
+            segments = hierarchicalChunker.splitWithTypeAwareness(
+                    parentContent, CHILD_CHUNK_SIZE, OVERLAP, hasCode, hasTable);
+        } else {
+            segments = hierarchicalChunker.splitWithBoundaryAwareness(
+                    parentContent, CHILD_CHUNK_SIZE, OVERLAP);
+        }
 
         int segStart = 0;  // 当前 segment 在父 Chunk 文本中的起始位置
         for (int i = 0; i < segments.size(); i++) {
@@ -249,8 +345,7 @@ public class ParentChildChunker {
 
             children.add(child);
 
-            // 下一段起始：步进 = CHILD_CHUNK_SIZE - OVERLAP
-            segStart += (CHILD_CHUNK_SIZE - OVERLAP);
+            segStart = segEnd - OVERLAP;
         }
 
         parent.addMetadata("childCount", children.size());

@@ -17,14 +17,14 @@ deepseek:
   base-url: https://api.deepseek.com/v1
   api-key: ${DEEPSEEK_API_KEY}
   model-name: deepseek-chat
-  temperature: 0.1
+  temperature: 0.3
   max-tokens: 4096
 
 embedding:
   base-url: http://localhost:11434
-  model-name: modelscope.cn/Embedding-GGUF/bge-large-zh-v1.5:latest
+  model-name: dengcao/Qwen3-Embedding-0.6B:Q8_0
   dimension: 1024
-  batch-size: 32
+  batch-size: 16
 
 management:
   endpoints:
@@ -44,3 +44,11 @@ mybatis-plus:
   configuration:
     map-underscore-to-camel-case: true
     log-impl: org.apache.ibatis.logging.stdout.StdOutImpl
+
+rocketmq:
+  name-server: ${ROCKETMQ_NAME_SERVER:localhost:9876}
+  producer:
+    group: ingestion-producer-group
+    send-message-timeout: 3000
+    retry-times-when-send-failed: 2
+    max-message-size: 4194304

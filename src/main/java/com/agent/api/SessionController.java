@@ -2,6 +2,7 @@ package com.agent.api;
 
 import com.agent.api.dto.SessionRequest;
 import com.agent.api.dto.SessionResponse;
+import com.agent.core.Message;
 import com.agent.memory.AgentSession;
 import com.agent.memory.MemoryManager;
 import lombok.extern.slf4j.Slf4j;
@@ -14,7 +15,9 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
 @Slf4j
 @RestController
@@ -66,6 +69,28 @@ public class SessionController {
                         .updatedAt(s.getUpdatedAt().toString())
                         .build())
                 .toList();
+    }
+
+    @GetMapping("/sessions/{sessionId}/messages")
+    public Map<String, Object> getSessionMessages(@PathVariable String sessionId,
+                                                  @RequestParam(defaultValue = "100") int limit) {
+        log.info("GET /sessions/{}/messages limit={}", sessionId, limit);
+        List<Message> messages = memoryManager.getSessionMessages(sessionId, limit);
+
+        List<Map<String, Object>> msgList = messages.stream()
+                .map(m -> {
+                    Map<String, Object> map = new LinkedHashMap<>();
+                    map.put("role", m.getRole().name().toLowerCase());
+                    map.put("content", m.getContent());
+                    map.put("timestamp", m.getTimestamp() != null ? m.getTimestamp().toString() : "");
+                    return map;
+                })
+                .toList();
+
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("sessionId", sessionId);
+        result.put("messages", msgList);
+        return result;
     }
 
     @DeleteMapping("/sessions/{sessionId}")

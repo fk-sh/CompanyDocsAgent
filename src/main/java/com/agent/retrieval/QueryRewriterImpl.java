@@ -8,6 +8,9 @@ import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -47,7 +50,8 @@ public class QueryRewriterImpl {
 
     private static final int MAX_EXPANDED_QUERIES = 3;// 最大扩展查询数量
 
-    private final DeepSeekChatClient chatClient; // 调用 DeepSeek API 的客户端
+    private final DeepSeekChatClient chatClient;
+    private final ExecutorService expandExecutor = Executors.newVirtualThreadPerTaskExecutor();
 
     public QueryRewriterImpl(DeepSeekChatClient chatClient) {
         this.chatClient = chatClient;
@@ -91,15 +95,31 @@ public class QueryRewriterImpl {
     //多query改写合并
     public List<String> expandAndMerge(String originalQuery) {
         Set<String> allQueries = new LinkedHashSet<>();
-        allQueries.add(originalQuery);//添加原始查询
+        allQueries.add(originalQuery);
 
-        RewriteResult rewriteResult = rewrite(originalQuery);//重写原始查询
-        List<String> rewritten = rewriteResult.getEffectiveQueries();//获取改写后的查询语句
-        allQueries.addAll(rewritten);//添加改写后的查询语句
+        RewriteResult rewriteResult = rewrite(originalQuery);
+        List<String> rewritten = rewriteResult.getEffectiveQueries();
+        allQueries.addAll(rewritten);
 
-        for (String q : new ArrayList<>(allQueries)) {
-            List<String> expanded = expand(q);//扩展查询
-            allQueries.addAll(expanded);//添加扩展后的查询语句
+        List<CompletableFuture<List<String>>> expandFutures = new ArrayList<>();
+        for (String q : rewritten) {
+            expandFutures.add(CompletableFuture.supplyAsync(() -> {
+                try {
+                    return expand(q);
+                } catch (Exception e) {
+                    log.warn("Expand query '{}' failed: {}", q, e.getMessage());
+                    return List.<String>of();
+                }
+            }, expandExecutor));
+        }
+
+        for (CompletableFuture<List<String>> future : expandFutures) {
+            try {
+                List<String> expanded = future.join();
+                allQueries.addAll(expanded);
+            } catch (Exception e) {
+                log.warn("Expand future join failed: {}", e.getMessage());
+            }
         }
 
         return new ArrayList<>(allQueries);

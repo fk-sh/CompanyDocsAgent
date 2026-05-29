@@ -60,6 +60,16 @@ public class DeepSeekStreamingClient {
         return doStream(messages);
     }
 
+    public Flux<String> streamRaw(String systemPrompt, String userPrompt) {
+        log.debug("streamRaw request with system prompt, user prompt length: {}", userPrompt.length());
+        var messages = new java.util.ArrayList<dev.langchain4j.data.message.ChatMessage>();
+        if (systemPrompt != null && !systemPrompt.isBlank()) {
+            messages.add(SystemMessage.from(systemPrompt));
+        }
+        messages.add(UserMessage.from(userPrompt));
+        return doStream(messages);
+    }
+
     private Flux<String> doStream(java.util.List<dev.langchain4j.data.message.ChatMessage> messages) {
         Sinks.Many<String> sink = Sinks.many().unicast().onBackpressureBuffer();
 

@@ -8,6 +8,7 @@ import org.springframework.stereotype.Component;
 
 import java.util.*;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.stream.Collectors;
@@ -81,6 +82,37 @@ public class HybridRetriever implements Retriever {
         return finalResults;// 返回 topK 个文档
     }
 
+    public List<Chunk> retrieveWithQueries(String originalQuery, List<String> preExpandedQueries, int topK) {
+        log.info("HybridRetriever.retrieveWithQueries: original='{}', queries={}, topK={}",
+                originalQuery, preExpandedQueries.size(), topK);
+
+        List<RankedChunk> allCandidates;
+        if (preExpandedQueries.size() <= 1) {
+            allCandidates = multiRecallSingleQuery(preExpandedQueries.get(0));
+        } else {
+            allCandidates = multiRecallMultiQuery(preExpandedQueries);
+        }
+
+        List<RankedChunk> rrfRanked = rrfFusion(allCandidates);
+
+        List<RankedChunk> coarseRanked = coarseRanker.rank(originalQuery, rrfRanked, COARSE_TOP_K);
+
+        List<RankedChunk> fineRanked = fineRanker.rerank(originalQuery, coarseRanked, Math.min(topK * 2, FINE_TOP_K));
+
+        List<Chunk> resolved = parentChildResolver.resolve(
+                fineRanked.stream()
+                .map(RankedChunk::chunk)
+                .toList()
+        );
+
+        int resultSize = Math.min(topK, resolved.size());
+        List<Chunk> finalResults = resolved.subList(0, resultSize);
+
+        log.info("HybridRetriever.retrieveWithQueries: {} results from {} queries",
+                finalResults.size(), preExpandedQueries.size());
+        return finalResults;
+    }
+
     // 单查询多策略召回
     private List<RankedChunk> multiRecallSingleQuery(String query) {
 
@@ -129,16 +161,27 @@ public class HybridRetriever implements Retriever {
 
     // 多查询多策略召回
     private List<RankedChunk> multiRecallMultiQuery(List<String> queries) {
-        Map<String, RankedChunk> mergedMap = new LinkedHashMap<>();
+        Map<String, RankedChunk> mergedMap = new ConcurrentHashMap<>();
 
+        List<CompletableFuture<Void>> futures = new ArrayList<>();
         for (String q : queries) {
-            List<RankedChunk> results = multiRecallSingleQuery(q);// 单查询多策略召回
-            for (RankedChunk rc : results) {// 遍历每个召回结果
-                mergedMap.merge(rc.chunk().getId(), rc, (existing, incoming) -> {
-                    existing.setBm25Score(Math.max(existing.bm25Score(), incoming.bm25Score()));
-                    existing.setKnnScore(Math.max(existing.knnScore(), incoming.knnScore()));
-                    return existing;
-                });
+            futures.add(CompletableFuture.runAsync(() -> {
+                List<RankedChunk> results = multiRecallSingleQuery(q);
+                for (RankedChunk rc : results) {
+                    mergedMap.merge(rc.chunk().getId(), rc, (existing, incoming) -> {
+                        existing.setBm25Score(Math.max(existing.bm25Score(), incoming.bm25Score()));
+                        existing.setKnnScore(Math.max(existing.knnScore(), incoming.knnScore()));
+                        return existing;
+                    });
+                }
+            }, executor));
+        }
+
+        for (CompletableFuture<Void> future : futures) {
+            try {
+                future.join();
+            } catch (Exception e) {
+                log.warn("MultiRecallMultiQuery future failed: {}", e.getMessage());
             }
         }
 

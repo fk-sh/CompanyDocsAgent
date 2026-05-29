@@ -91,9 +91,17 @@ public class IngestionService {
 
         // (2) 切割阶段：原始文本 → 内容块 → Chunk
         updateStatus(document, Document.DocumentStatus.CHUNKING, statusCallback);
+        log.info("Extracting text blocks from raw text (length: {})", rawText.length());
         List<ContentBlock> textBlocks = extractTextBlocks(rawText);
+        log.info("Extracted {} text blocks", textBlocks.size());
+        
+        log.info("Extracting all content blocks...");
         List<ContentBlock> allBlocks = extractAllContent(rawText, textBlocks);
+        log.info("Total content blocks: {}", allBlocks.size());
+        
+        log.info("Starting parent-child chunking...");
         List<Chunk> chunks = parentChildChunker.chunk(document.getId(), allBlocks);
+        log.info("Parent-child chunking completed: {} chunks", chunks.size());
 
         document.setChunkCount(chunks.size());
         log.info("Ingestion completed for document {}: {} chunks", document.getId(), chunks.size());

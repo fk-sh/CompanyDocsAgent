@@ -10,6 +10,7 @@ import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.multipart.MaxUploadSizeExceededException;
 import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
+import org.springframework.web.servlet.resource.NoResourceFoundException;
 
 import java.time.LocalDateTime;
 
@@ -46,6 +47,14 @@ public class GlobalExceptionHandler {
         log.warn("File upload exceeds max size: {}", ex.getMessage());
         return buildResponse(HttpStatus.PAYLOAD_TOO_LARGE, "文件过大",
                 "上传文件大小超过限制 (最大 " + ex.getMaxUploadSize() / 1024 / 1024 + "MB)", request);
+    }
+
+    @ExceptionHandler(NoResourceFoundException.class)
+    public ResponseEntity<ErrorResponse> handleNotFound(NoResourceFoundException ex,
+                                                         HttpServletRequest request) {
+        log.debug("Resource not found: {}", request.getRequestURI());
+        return buildResponse(HttpStatus.NOT_FOUND, "资源不存在",
+                "请求的资源 '" + request.getRequestURI() + "' 不存在", request);
     }
 
     @ExceptionHandler(RuntimeException.class)

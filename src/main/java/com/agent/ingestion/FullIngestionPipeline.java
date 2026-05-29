@@ -86,7 +86,11 @@ public class FullIngestionPipeline {
         //test_doc.md → PDF/Word/MD 解析器 → 提取 TEXT/Table/Code → ParentChildChunker 切割 → 16 个 Chunk
         List<Chunk> chunks = ingestionService.ingest(document, filePath, statusCallback);
 
-        // 把文档状态从 UPLOADED 改为 EMBEDDING
+        String fileName = document.getFileName();
+        for (Chunk chunk : chunks) {
+            chunk.addMetadata("fileName", fileName);
+        }
+
         updateStatus(document, Document.DocumentStatus.EMBEDDING, statusCallback);
         // 从 Chunk 中提取文本内容
         List<String> texts = chunks.stream().map(Chunk::getContent).toList();

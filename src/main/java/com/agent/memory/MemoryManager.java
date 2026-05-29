@@ -1,7 +1,6 @@
 package com.agent.memory;
 
 import com.agent.core.AgentContext;
-import com.agent.core.Memory;
 import com.agent.core.Message;
 import com.agent.llm.DeepSeekChatClient;
 import lombok.extern.slf4j.Slf4j;
@@ -13,72 +12,47 @@ import java.util.Optional;
 import java.util.UUID;
 
 /**
- * 记忆模块统一入口，封装三层记忆体系的全部操作。
+ * 记忆模块统一入口，封装记忆体系的全部操作。
  * <p>
  * <b>职责</b>：
  * <ul>
  *   <li>会话生命周期管理：创建、查询、归档、删除</li>
- *   <li>消息持久化：将对话写入 ConversationMemory + MySQL + ES VectorMemory（三层同步）</li>
+ *   <li>消息持久化：将对话写入 ConversationMemory + MySQL（异步）</li>
  *   <li>上下文拼装：{@link #buildContext} 一次调用将记忆注入 AgentContext</li>
- *   <li>用户画像提取：{@link #extractUserProfile} 从对话中异步提取用户偏好</li>
+ *   <li>情景记忆：会话结束时将对话提炼为结构化情景摘要写入 ES</li>
  * </ul>
  * <p>
- * <b>三层记忆注入顺序</b>（{@link #buildContext} 内）：
+ * <b>记忆注入顺序</b>（{@link #buildContext} 内）：
  * <ol>
- *   <li>{@code relevantLongTermMemory} — ES 语义检索的 Top-5 相关记忆（跨会话精确匹配）</li>
- *   <li>{@code userProfile} — MySQL 用户画像（跨会话背景信息）</li>
- *   <li>{@code history} — ConversationMemory 滑动窗口中的近期对话（当前会话完整细节）</li>
+ *   <li>{@code episodicContext} — ES 语义检索的 Top-K 相关情景记忆</li>
+ *   <li>{@code userId} — 从 session 解析的用户标识</li>
+ *   <li>{@code history} — ConversationMemory 滑动窗口中的近期对话</li>
  *   <li>{@code memoryContext} — 格式化后的完整上下文 Prompt 文本</li>
  * </ol>
- * <p>
- * <b>可选依赖处理</b>：{@link VectorMemory} 和 {@link UserMemory} 通过
- * {@code List<Memory>} + {@code instanceof} 方式注入，
- * ES/MySQL 不可用时自动降级，不影响核心功能。
  *
  * @see ConversationMemory
- * @see VectorMemory
- * @see UserMemory
+ * @see EpisodicMemory
  */
 @Slf4j
 @Service
 public class MemoryManager {
 
     private final ConversationMemory conversationMemory;
-    private final VectorMemory vectorMemory;
-    private final UserMemory userMemory;
+    private final EpisodicMemory episodicMemory;
     private final MysqlSessionStore sessionStore;
     private final MysqlMessageStore messageStore;
     private final DeepSeekChatClient chatClient;
 
-    /**
-     * 通过 {@code List<Memory>} 注入所有 Memory 实现类，
-     * 再通过 {@code instanceof} 分流到具体类型。
-     * <p>
-     * 用此方式而非直接按类型注入的原因是：
-     * VectorMemory 有 @Async 方法，Spring 会为其创建 JDK 动态代理，
-     * 代理只暴露接口类型（Memory），导致按具体类型注入失败。
-     */
     public MemoryManager(ConversationMemory conversationMemory,
-                         List<Memory> memoryBeans,
+                         EpisodicMemory episodicMemory,
                          MysqlSessionStore sessionStore,
                          MysqlMessageStore messageStore,
                          DeepSeekChatClient chatClient) {
         this.conversationMemory = conversationMemory;
+        this.episodicMemory = episodicMemory;
         this.sessionStore = sessionStore;
         this.messageStore = messageStore;
         this.chatClient = chatClient;
-
-        VectorMemory vm = null;
-        UserMemory um = null;
-        for (Memory mem : memoryBeans) {
-            if (mem instanceof VectorMemory v) {
-                vm = v;
-            } else if (mem instanceof UserMemory u) {
-                um = u;
-            }
-        }
-        this.vectorMemory = vm;
-        this.userMemory = um;
     }
 
     // ======================== 会话生命周期 ========================
@@ -126,26 +100,50 @@ public class MemoryManager {
     }
 
     /**
-     * 归档会话：更新 MySQL 状态为 ARCHIVED → 清空短期记忆。
+     * 归档会话：先提取情景记忆，再更新 MySQL 状态为 ARCHIVED，最后清空短期记忆。
      */
     public void endSession(String sessionId) {
+        endSessionWithEpisodicMemory(sessionId);
         sessionStore.updateStatus(sessionId, "ARCHIVED");
         conversationMemory.clear();
         log.info("Ended session {}", sessionId);
     }
 
     /**
+     * 会话结束时提取情景记忆并异步写入 ES。
+     * <p>
+     * 将当前 ConversationMemory 中的完整对话（含历史摘要）
+     * 送给 LLM 提炼出话题标签、关键实体、意图序列，
+     * 作为一条情景摘要存入 ES agent_episodic_memory 索引。
+     * 后续新会话中，通过语义检索召回相关情景记忆。
+     */
+    public void endSessionWithEpisodicMemory(String sessionId) {
+        String conversation = conversationMemory.buildContextPrompt();
+        if (conversation.isEmpty()) {
+            return;
+        }
+        episodicMemory.extractAndStore(sessionId, conversation);
+    }
+
+    /**
      * 级联删除会话及其所有关联数据：
-     * MySQL sessions → MySQL messages → ES 长期记忆 → 清空内存。
+     * MySQL sessions → MySQL messages → ES 情景记忆 → 清空内存。
      */
     public void deleteSession(String sessionId) {
         sessionStore.delete(sessionId);
         messageStore.deleteBySessionId(sessionId);
-        if (vectorMemory != null) {
-            vectorMemory.deleteBySessionId(sessionId);
-        }
+        episodicMemory.deleteBySessionId(sessionId);
         conversationMemory.clear();
         log.info("Deleted session {}", sessionId);
+    }
+
+    /**
+     * 根据 sessionId 查询关联的 userId。
+     * sessionId 不存在或无关联用户时返回 "anonymous"。
+     */
+    public String resolveUserId(String sessionId) {
+        AgentSession session = sessionStore.findById(sessionId);
+        return session != null ? session.getUserId() : "anonymous";
     }
 
     /**
@@ -155,16 +153,23 @@ public class MemoryManager {
         sessionStore.updateTitle(sessionId, title);
     }
 
+    /**
+     * 获取指定会话的消息列表（按时间正序）。
+     */
+    public List<Message> getSessionMessages(String sessionId, int limit) {
+        return messageStore.findBySessionId(sessionId, limit);
+    }
+
     // ======================== 上下文构建 ========================
 
     /**
-     * 构建完整的上下文对象，拼接三层记忆。
+     * 构建完整的上下文对象，拼接记忆。
      * <p>
-     * 这是记忆模块最重要的入口方法，一次调用完成：
+     * 一次调用完成：
      * <ol>
      *   <li>从 MySQL 加载该 session 的历史消息到 ConversationMemory</li>
-     *   <li>用当前 query 在 ES 中语义检索 Top-5 相关记忆 → 写入 {@code ctx.relevantLongTermMemory}</li>
-     *   <li>根据 session 关联的 userId 读取用户画像 → 写入 {@code ctx.userProfile}</li>
+     *   <li>用当前 query 在 ES 中语义检索 Top-5 相关情景记忆 → 写入 {@code ctx.episodicContext}</li>
+     *   <li>从 session 解析 userId → 写入 {@code ctx.userId}</li>
      *   <li>将 ConversationMemory 中的近期消息写入 {@code ctx.history}</li>
      *   <li>调用 {@link ConversationMemory#buildContextPrompt()} 生成格式化文本 →
      *       写入 {@code ctx.memoryContext}</li>
@@ -177,23 +182,15 @@ public class MemoryManager {
     public AgentContext buildContext(String sessionId, String userQuery) {
         AgentContext ctx = new AgentContext(sessionId, userQuery);
 
-        loadSessionMemory(sessionId);// 加载会话历史消息
+        loadSessionMemory(sessionId);
 
-        if (vectorMemory != null) {
-            List<Message> relevantHistory = vectorMemory.search(userQuery, 5);// 从 ES 中语义检索 Top-5 相关记忆
-            if (!relevantHistory.isEmpty()) {
-                ctx.setVariable("relevantLongTermMemory", relevantHistory);// 写入相关记忆
-            }
-        }
+        AgentSession session = sessionStore.findById(sessionId);
+        String userId = session != null ? session.getUserId() : "anonymous";
+        ctx.setVariable("userId", userId);
 
-        if (userMemory != null) {
-            AgentSession session = sessionStore.findById(sessionId);// 查询会话记录
-            if (session != null) {
-                String userProfile = userMemory.buildUserContextPrompt(session.getUserId());// 构建用户画像提示词
-                if (!userProfile.isEmpty()) {
-                    ctx.setVariable("userProfile", userProfile);// 写入用户画像
-                }
-            }
+        String episodicContext = episodicMemory.buildEpisodeContextText(userQuery, 5);
+        if (!episodicContext.isEmpty()) {
+            ctx.setVariable("episodicContext", episodicContext);
         }
 
         List<Message> recentMessages = conversationMemory.getAll();
@@ -201,13 +198,13 @@ public class MemoryManager {
             ctx.addMessage(msg);
         }
 
-        String contextPrompt = conversationMemory.buildContextPrompt();// 构建上下文提示词
+        String contextPrompt = conversationMemory.buildContextPrompt();
         if (!contextPrompt.isEmpty()) {
-            ctx.setVariable("memoryContext", contextPrompt);// 写入上下文提示词
+            ctx.setVariable("memoryContext", contextPrompt);
         }
 
         log.debug("Built context for session {}, historySize={}", sessionId, recentMessages.size());
-        return ctx;// 返回构建好的上下文
+        return ctx;
     }
 
     /**
@@ -215,32 +212,24 @@ public class MemoryManager {
      * 先清空内存再加载，避免重复。
      */
     public void loadSessionMemory(String sessionId) {
-        conversationMemory.clear();// 清空内存
+        conversationMemory.clear();
 
-        List<Message> dbMessages = messageStore.findBySessionId(sessionId, 50);// 查询会话历史消息
-        // 50 条消息足够覆盖大多数会话，避免查询所有消息
+        List<Message> dbMessages = messageStore.findBySessionId(sessionId, 50);
         if (!dbMessages.isEmpty()) {
-            conversationMemory.addAll(dbMessages);// 加载到 ConversationMemory
+            conversationMemory.addAll(dbMessages);
             log.debug("Loaded {} messages from DB for session {}", dbMessages.size(), sessionId);
-        }
-
-        if (vectorMemory != null) {
-            vectorMemory.setCurrentSessionId(sessionId);
         }
     }
 
     // ======================== 消息写入 ========================
 
     /**
-     * 写入消息到三层存储：
-     * ConversationMemory（内存） + MySQL（异步） + ES VectorMemory（异步）。
+     * 写入消息到两层存储：
+     * ConversationMemory（内存） + MySQL（异步）。
      */
     public void addMessage(String sessionId, Message message) {
-        conversationMemory.add(message);// 写入 ConversationMemory
-        persistMessageAsync(sessionId, message);// 异步写入 MySQL
-        if (vectorMemory != null) {
-            vectorMemory.addAsync(message);// 异步写入 ES VectorMemory
-        }
+        conversationMemory.add(message);
+        persistMessageAsync(sessionId, message);
     }
 
     /**
@@ -268,27 +257,6 @@ public class MemoryManager {
         Message msg = Message.system(content);
         msg.setId(UUID.randomUUID().toString().replace("-", ""));
         addMessage(sessionId, msg);
-    }
-
-    // ======================== 用户画像 ========================
-
-    /**
-     * 从用户消息中提取偏好，异步存入用户画像。
-     * <p>
-     * 从会话中读取 userId，将 content 送给 {@link UserMemory#extractAndSaveAsync}
-     * 做 LLM 提取 + 增量合并，结果写入 MySQL {@code user_profiles} 表。
-     *
-     * @param sessionId          会话 ID（用于查找 userId）
-     * @param userMessageContent 用户消息正文（仅 USER 角色消息）
-     */
-    public void extractUserProfile(String sessionId, String userMessageContent) {
-        if (userMemory == null) {
-            return;
-        }
-        AgentSession session = sessionStore.findById(sessionId);
-        if (session != null && session.getUserId() != null && !session.getUserId().isBlank()) {
-            userMemory.extractAndSaveAsync(session.getUserId(), userMessageContent);
-        }
     }
 
     // ======================== 查询 ========================
