@@ -1,6 +1,8 @@
 package com.agent.mq;
 
 import com.agent.core.Document;
+import com.agent.document.DocumentService;
+import com.agent.document.ManagedDocumentStatus;
 import com.agent.ingestion.FullIngestionPipeline;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.rocketmq.spring.annotation.ConsumeMode;
@@ -30,13 +32,16 @@ public class DocumentIngestionConsumer implements RocketMQListener<DocumentInges
     private final FullIngestionPipeline ingestionPipeline;
     private final IngestionStatusStore statusStore;
     private final RocketMQTemplate rocketMQTemplate;
+    private final DocumentService documentService;
 
     public DocumentIngestionConsumer(FullIngestionPipeline ingestionPipeline,
                                      IngestionStatusStore statusStore,
-                                     RocketMQTemplate rocketMQTemplate) {
+                                     RocketMQTemplate rocketMQTemplate,
+                                     DocumentService documentService) {
         this.ingestionPipeline = ingestionPipeline;
         this.statusStore = statusStore;
         this.rocketMQTemplate = rocketMQTemplate;
+        this.documentService = documentService;
     }
 
     @Override
@@ -48,6 +53,7 @@ public class DocumentIngestionConsumer implements RocketMQListener<DocumentInges
                 documentId, message.getFileName(), retryCount);
 
         statusStore.update(documentId, retryCount > 0 ? "RETRYING(" + retryCount + ")" : "PROCESSING", null);
+        documentService.updateStatus(documentId, ManagedDocumentStatus.PROCESSING, null);
 
         try {
             Path filePath = Path.of(message.getFilePath());
@@ -67,6 +73,7 @@ public class DocumentIngestionConsumer implements RocketMQListener<DocumentInges
             log.info("RocketMQ ingestion completed: documentId={}, chunks={}, status={}",
                     documentId, document.getChunkCount(), document.getStatus());
             statusStore.update(documentId, "READY", document.getChunkCount());
+            documentService.updateStatus(documentId, ManagedDocumentStatus.READY, document.getChunkCount());
 
         } catch (Exception e) {
             handleFailure(message, e.getMessage());
@@ -92,6 +99,7 @@ public class DocumentIngestionConsumer implements RocketMQListener<DocumentInges
             rocketMQTemplate.syncSend(DLQ_TOPIC, message, 3000);
 
             statusStore.markDeadLettered(documentId, reason);
+            documentService.updateStatus(documentId, ManagedDocumentStatus.FAILED, null);
         }
     }
 }

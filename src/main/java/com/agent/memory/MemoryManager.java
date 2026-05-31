@@ -37,11 +37,11 @@ import java.util.UUID;
 @Service
 public class MemoryManager {
 
-    private final ConversationMemory conversationMemory;
-    private final EpisodicMemory episodicMemory;
-    private final MysqlSessionStore sessionStore;
-    private final MysqlMessageStore messageStore;
-    private final DeepSeekChatClient chatClient;
+    private final ConversationMemory conversationMemory;// 对话记忆，滑动窗口存储近期对话
+    private final EpisodicMemory episodicMemory;// 情景记忆，语义检索相关情景摘要
+    private final MysqlSessionStore sessionStore;// 会话存储，MySQL 表
+    private final MysqlMessageStore messageStore;// 消息存储，MySQL 表
+    private final DeepSeekChatClient chatClient;// 模型客户端，用于调用 DeepSeek 模型
 
     public MemoryManager(ConversationMemory conversationMemory,
                          EpisodicMemory episodicMemory,

@@ -7,6 +7,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
 import java.util.List;
+import java.util.Map;
 
 @Slf4j
 @Component("keywordRecall")
@@ -25,9 +26,13 @@ public class KeywordRecallStrategyImpl implements RecallStrategy {
     }
 
     @Override
-    // 实现 BM25 关键词召回策略
     public List<Chunk> recall(String query, int topK) {
-        List<Chunk> results = vectorStore.bm25Search(query, topK);
+        return recall(query, topK, Map.of());
+    }
+
+    @Override
+    public List<Chunk> recall(String query, int topK, Map<String, Object> filters) {
+        List<Chunk> results = vectorStore.bm25Search(query, topK, filters);
         log.info("Keyword recall [{}] returned {} chunks for query: {}", name(), results.size(), query);
         return results;
     }

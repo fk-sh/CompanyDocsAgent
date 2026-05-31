@@ -11,6 +11,7 @@ import org.springframework.stereotype.Component;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentLinkedQueue;
@@ -61,10 +62,14 @@ public class RetrieverAgent implements Agent {
     }
 
     public String retrieve(AgentContext ctx, List<String> queries) {
-        return retrieve(queries);
+        return retrieve(queries, buildFilters(ctx));
     }
 
     public String retrieve(List<String> queries) {
+        return retrieve(queries, Map.of());
+    }
+
+    public String retrieve(List<String> queries, Map<String, Object> filters) {
         if (queries == null || queries.isEmpty()) {
             return "";
         }
@@ -74,7 +79,7 @@ public class RetrieverAgent implements Agent {
         List<CompletableFuture<Void>> futures = new ArrayList<>();
         for (String query : queries) {
             futures.add(CompletableFuture.runAsync(() -> {
-                List<Chunk> roundChunks = retrieveWithPipeline(query);
+                List<Chunk> roundChunks = retrieveWithPipeline(query, filters);
                 allChunks.addAll(roundChunks);
             }, executor));
         }
@@ -109,7 +114,7 @@ public class RetrieverAgent implements Agent {
                 break;
             }
 
-            List<Chunk> moreChunks = retrieveWithPipeline(newQuery);
+            List<Chunk> moreChunks = retrieveWithPipeline(newQuery, filters);
             for (Chunk c : moreChunks) {
                 if (seen.add(c.getId())) {
                     deduplicated.add(c);
@@ -122,7 +127,7 @@ public class RetrieverAgent implements Agent {
         return buildContextText(deduplicated);
     }
 
-    private List<Chunk> retrieveWithPipeline(String query) {
+    private List<Chunk> retrieveWithPipeline(String query, Map<String, Object> filters) {
         var rewritten = queryRewriter.rewrite(query);
 
         List<String> variants = new ArrayList<>();
@@ -154,7 +159,15 @@ public class RetrieverAgent implements Agent {
         List<String> uniqueVariants = new ArrayList<>(new java.util.LinkedHashSet<>(variants));
         log.debug("RetrieverAgent: query expanded to {} variants", uniqueVariants.size());
 
-        return hybridRetriever.retrieveWithQueries(query, uniqueVariants, 10);
+        return hybridRetriever.retrieveWithQueries(query, uniqueVariants, 10, filters);
+    }
+
+    private Map<String, Object> buildFilters(AgentContext ctx) {
+        return Map.of(
+                "userId", ctx.getVariable("userId", ""),
+                "department", ctx.getVariable("department", ""),
+                "role", ctx.getVariable("role", "USER")
+        );
     }
 
     private String generateReActQuery(String originalQuery, List<Chunk> currentChunks) {

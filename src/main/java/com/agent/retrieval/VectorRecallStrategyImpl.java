@@ -8,6 +8,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
 import java.util.List;
+import java.util.Map;
 
 @Slf4j
 @Component("vectorRecall")
@@ -28,10 +29,14 @@ public class VectorRecallStrategyImpl implements RecallStrategy {
     }
 
     @Override
-    // 实现向量召回策略，根据查询文本返回 Top-K 个相似的 Chunk
     public List<Chunk> recall(String query, int topK) {
+        return recall(query, topK, Map.of());
+    }
+
+    @Override
+    public List<Chunk> recall(String query, int topK, Map<String, Object> filters) {
         float[] queryVector = embeddingService.embed(query);
-        List<Chunk> results = vectorStore.knnSearch(queryVector, topK);
+        List<Chunk> results = vectorStore.knnSearch(queryVector, topK, filters);
         log.info("Vector recall [{}] returned {} chunks for query: {}", name(), results.size(), query);
         return results;
     }

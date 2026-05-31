@@ -29,6 +29,12 @@ public class DocumentIngestionMessage implements Serializable {
 
     private long createdAt;
 
+    private String uploaderName;
+
+    private String department;
+
+    private String visibility;
+
     @Builder.Default
     private int retryCount = 0;
 
@@ -42,6 +48,9 @@ public class DocumentIngestionMessage implements Serializable {
                 .filePath(this.filePath)
                 .fileSize(this.fileSize)
                 .createdAt(this.createdAt)
+                .uploaderName(this.uploaderName)
+                .department(this.department)
+                .visibility(this.visibility)
                 .retryCount(this.retryCount + 1)
                 .build();
     }

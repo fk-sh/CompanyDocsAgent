@@ -1,12 +1,16 @@
 package com.agent.api;
 
 import com.agent.api.dto.ErrorResponse;
+import com.agent.auth.ForbiddenException;
+import com.agent.auth.UnauthorizedException;
 import jakarta.servlet.http.HttpServletRequest;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.stereotype.Controller;
 import org.springframework.web.bind.MissingServletRequestParameterException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
+import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.multipart.MaxUploadSizeExceededException;
 import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
@@ -17,6 +21,22 @@ import java.time.LocalDateTime;
 @Slf4j
 @RestControllerAdvice
 public class GlobalExceptionHandler {
+
+// 当任何一个 @Controller 或 @RestController 中的方法抛出 UnauthorizedException 时，Spring 会自动调用这个 @ExceptionHandler 方法。
+// 该方法可以返回统一格式的错误信息、特定的 HTTP 状态码（如 401），避免在每个控制器里重复写 try-catch
+    @ExceptionHandler(UnauthorizedException.class)
+    public ResponseEntity<ErrorResponse> handleUnauthorized(UnauthorizedException ex,
+                                                            HttpServletRequest request) {
+        log.warn("Unauthorized: {}", ex.getMessage());
+        return buildResponse(HttpStatus.UNAUTHORIZED, "未登录", ex.getMessage(), request);
+    }
+
+    @ExceptionHandler(ForbiddenException.class)
+    public ResponseEntity<ErrorResponse> handleForbidden(ForbiddenException ex,
+                                                         HttpServletRequest request) {
+        log.warn("Forbidden: {}", ex.getMessage());
+        return buildResponse(HttpStatus.FORBIDDEN, "无权限", ex.getMessage(), request);
+    }
 
     @ExceptionHandler(IllegalArgumentException.class)
     public ResponseEntity<ErrorResponse> handleIllegalArgument(IllegalArgumentException ex,

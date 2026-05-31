@@ -55,10 +55,10 @@ public class HybridRetriever implements Retriever {
         List<RankedChunk> allCandidates;// 所有候选文档
 
         if (allQueries.size() == 1) {
-            allCandidates = multiRecallSingleQuery(allQueries.get(0));// 单查询多策略召回
+            allCandidates = multiRecallSingleQuery(allQueries.get(0), filters);// 单查询多策略召回
         } else {
             log.info("Query expanded to {} variants: {}", allQueries.size(), allQueries);
-            allCandidates = multiRecallMultiQuery(allQueries);// 多查询多策略召回文档
+            allCandidates = multiRecallMultiQuery(allQueries, filters);// 多查询多策略召回文档
         }
 
         List<RankedChunk> rrfRanked = rrfFusion(allCandidates);// RRF 融合所有召回的文档
@@ -83,14 +83,19 @@ public class HybridRetriever implements Retriever {
     }
 
     public List<Chunk> retrieveWithQueries(String originalQuery, List<String> preExpandedQueries, int topK) {
+        return retrieveWithQueries(originalQuery, preExpandedQueries, topK, Map.of());
+    }
+
+    public List<Chunk> retrieveWithQueries(String originalQuery, List<String> preExpandedQueries, int topK,
+                                           Map<String, Object> filters) {
         log.info("HybridRetriever.retrieveWithQueries: original='{}', queries={}, topK={}",
                 originalQuery, preExpandedQueries.size(), topK);
 
         List<RankedChunk> allCandidates;
         if (preExpandedQueries.size() <= 1) {
-            allCandidates = multiRecallSingleQuery(preExpandedQueries.get(0));
+            allCandidates = multiRecallSingleQuery(preExpandedQueries.get(0), filters);
         } else {
-            allCandidates = multiRecallMultiQuery(preExpandedQueries);
+            allCandidates = multiRecallMultiQuery(preExpandedQueries, filters);
         }
 
         List<RankedChunk> rrfRanked = rrfFusion(allCandidates);
@@ -114,7 +119,7 @@ public class HybridRetriever implements Retriever {
     }
 
     // 单查询多策略召回
-    private List<RankedChunk> multiRecallSingleQuery(String query) {
+    private List<RankedChunk> multiRecallSingleQuery(String query, Map<String, Object> filters) {
 
         log.info("MultiRecallSingleQuery: query='{}'", query);
         List<RankedChunk> allChunks = new ArrayList<>();
@@ -124,7 +129,7 @@ public class HybridRetriever implements Retriever {
         for (RecallStrategy strategy : recallStrategies) {
             futures.add(CompletableFuture.supplyAsync(() -> {
                 try {
-                    return strategy.recall(query, RECALL_TOP_K);//返回召回结果，其实就是存储在每一个虚拟线程的futures中
+                    return strategy.recall(query, RECALL_TOP_K, filters);//返回召回结果，其实就是存储在每一个虚拟线程的futures中
                 } catch (Exception e) {
                     log.warn("Recall strategy {} failed: {}", strategy.name(), e.getMessage());
                     return List.<Chunk>of();// 返回空列表
@@ -160,13 +165,13 @@ public class HybridRetriever implements Retriever {
     }
 
     // 多查询多策略召回
-    private List<RankedChunk> multiRecallMultiQuery(List<String> queries) {
+    private List<RankedChunk> multiRecallMultiQuery(List<String> queries, Map<String, Object> filters) {
         Map<String, RankedChunk> mergedMap = new ConcurrentHashMap<>();
 
         List<CompletableFuture<Void>> futures = new ArrayList<>();
         for (String q : queries) {
             futures.add(CompletableFuture.runAsync(() -> {
-                List<RankedChunk> results = multiRecallSingleQuery(q);
+                List<RankedChunk> results = multiRecallSingleQuery(q, filters);
                 for (RankedChunk rc : results) {
                     mergedMap.merge(rc.chunk().getId(), rc, (existing, incoming) -> {
                         existing.setBm25Score(Math.max(existing.bm25Score(), incoming.bm25Score()));

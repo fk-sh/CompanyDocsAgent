@@ -2,6 +2,8 @@ package com.agent.api;
 
 import com.agent.api.dto.SessionRequest;
 import com.agent.api.dto.SessionResponse;
+import com.agent.auth.CurrentUser;
+import com.agent.auth.CurrentUserHolder;
 import com.agent.core.Message;
 import com.agent.memory.AgentSession;
 import com.agent.memory.MemoryManager;
@@ -32,7 +34,8 @@ public class SessionController {
 
     @PostMapping("/sessions")
     public SessionResponse createSession(@RequestBody SessionRequest request) {
-        String userId = request.getUserId() != null ? request.getUserId() : "default-user";
+        CurrentUser currentUser = CurrentUserHolder.require();
+        String userId = currentUser.getId();
         String title = request.getTitle() != null ? request.getTitle() : "新对话";
 
         String sessionId = memoryManager.createSession(userId, title);
@@ -51,10 +54,11 @@ public class SessionController {
 
     @GetMapping("/sessions")
     public List<SessionResponse> listSessions(
-            @RequestParam(defaultValue = "default-user") String userId,
             @RequestParam(defaultValue = "20") int limit,
             @RequestParam(defaultValue = "0") int offset) {
 
+        CurrentUser currentUser = CurrentUserHolder.require();
+        String userId = currentUser.getId();
         log.info("GET /sessions userId={}, limit={}, offset={}", userId, limit, offset);
 
         List<AgentSession> sessions = memoryManager.getUserSessions(userId, limit, offset);
@@ -74,6 +78,11 @@ public class SessionController {
     @GetMapping("/sessions/{sessionId}/messages")
     public Map<String, Object> getSessionMessages(@PathVariable String sessionId,
                                                   @RequestParam(defaultValue = "100") int limit) {
+        CurrentUser currentUser = CurrentUserHolder.require();
+        AgentSession session = memoryManager.getSession(sessionId).orElse(null);
+        if (session == null || !currentUser.getId().equals(session.getUserId())) {
+            throw new IllegalArgumentException("会话不存在");
+        }
         log.info("GET /sessions/{}/messages limit={}", sessionId, limit);
         List<Message> messages = memoryManager.getSessionMessages(sessionId, limit);
 
@@ -95,6 +104,11 @@ public class SessionController {
 
     @DeleteMapping("/sessions/{sessionId}")
     public java.util.Map<String, String> deleteSession(@PathVariable String sessionId) {
+        CurrentUser currentUser = CurrentUserHolder.require();
+        AgentSession session = memoryManager.getSession(sessionId).orElse(null);
+        if (session == null || !currentUser.getId().equals(session.getUserId())) {
+            throw new IllegalArgumentException("会话不存在");
+        }
         log.info("DELETE /sessions/{}", sessionId);
         memoryManager.deleteSession(sessionId);
         return java.util.Map.of("status", "deleted", "sessionId", sessionId);

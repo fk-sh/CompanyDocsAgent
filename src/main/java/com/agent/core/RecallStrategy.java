@@ -1,6 +1,7 @@
 package com.agent.core;
 
 import java.util.List;
+import java.util.Map;
 
 /**
  * 召回策略接口，多路召回中的单一通道。
@@ -28,6 +29,10 @@ public interface RecallStrategy {
      * @return 召回的 Chunk 列表
      */
     List<Chunk> recall(String query, int topK);
+
+    default List<Chunk> recall(String query, int topK, Map<String, Object> filters) {
+        return recall(query, topK);
+    }
 
     /**
      * 召回 Top30（便捷方法）。

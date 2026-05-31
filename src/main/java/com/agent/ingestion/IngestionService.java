@@ -47,13 +47,16 @@ public class IngestionService {
     /** 所有 ContentExtractor 实现（Text/Table/Code/ImageDescription），Spring 自动注入 */
     private final List<ContentExtractor> extractors;
     private final ParentChildChunker parentChildChunker;
+    private final StructuredContentConverter structuredConverter;
 
     public IngestionService(List<DocumentParser> parsers,
                             List<ContentExtractor> extractors,
-                            ParentChildChunker parentChildChunker) {
+                            ParentChildChunker parentChildChunker,
+                            StructuredContentConverter structuredConverter) {
         this.parsers = parsers;
         this.extractors = extractors;
         this.parentChildChunker = parentChildChunker;
+        this.structuredConverter = structuredConverter;
     }
 
     /**
@@ -98,6 +101,10 @@ public class IngestionService {
         log.info("Extracting all content blocks...");
         List<ContentBlock> allBlocks = extractAllContent(rawText, textBlocks);
         log.info("Total content blocks: {}", allBlocks.size());
+
+        log.info("Converting structured content (tables/images) to plain text via LLM...");
+        allBlocks = structuredConverter.convert(allBlocks);
+        log.info("Structured content conversion completed, {} blocks ready for chunking", allBlocks.size());
         
         log.info("Starting parent-child chunking...");
         List<Chunk> chunks = parentChildChunker.chunk(document.getId(), allBlocks);

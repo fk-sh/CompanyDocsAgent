@@ -16,4 +16,9 @@ public class DocumentResponse {
     private String taskId;
     private long size;
     private String createdAt;
+    private String uploaderId;
+    private String uploaderName;
+    private String department;
+    private String visibility;
+    private Integer chunkCount;
 }

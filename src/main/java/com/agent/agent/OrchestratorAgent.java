@@ -115,7 +115,7 @@ public class OrchestratorAgent implements Agent {
             return Flux.just(answer);
         }
 
-        String retrievedContext = retrieverAgent.retrieve(plan.retrievalQueries());
+        String retrievedContext = retrieverAgent.retrieve(ctx, plan.retrievalQueries());
         ctx.setVariable("retrievedContext", retrievedContext);
         return generatorAgent.generateStream(ctx);
     }
@@ -160,7 +160,7 @@ public class OrchestratorAgent implements Agent {
             }
             case "knowledge_qa" -> {
                 log.info("OrchestratorAgent: executing knowledge_qa pipeline");
-                String retrievedContext = retrieverAgent.retrieve(plan.retrievalQueries());
+                String retrievedContext = retrieverAgent.retrieve(ctx, plan.retrievalQueries());
                 ctx.setVariable("retrievedContext", retrievedContext);
                 String answer = generatorAgent.generate(ctx);
                 ctx.setVariable("finalAnswer", answer);
@@ -169,7 +169,7 @@ public class OrchestratorAgent implements Agent {
             }
             default -> {
                 log.warn("OrchestratorAgent: unknown intent '{}', fallback to knowledge_qa", plan.intent());
-                String retrievedContext = retrieverAgent.retrieve(List.of(userQuery));
+                String retrievedContext = retrieverAgent.retrieve(ctx, List.of(userQuery));
                 ctx.setVariable("retrievedContext", retrievedContext);
                 String answer = generatorAgent.generate(ctx);
                 ctx.setVariable("finalAnswer", answer);

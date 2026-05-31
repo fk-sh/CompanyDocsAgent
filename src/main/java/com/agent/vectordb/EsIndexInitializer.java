@@ -92,6 +92,12 @@ public class EsIndexInitializer implements CommandLineRunner {
                             .similarity("cosine")
                     ))
                     .properties("metadata", p -> p.object(o -> o))
+                    .properties("fileName", p -> p.keyword(k -> k))
+                    .properties("uploaderName", p -> p.keyword(k -> k))
+                    .properties("department", p -> p.keyword(k -> k))
+                    .properties("visibility", p -> p.keyword(k -> k))
+                    .properties("documentStatus", p -> p.keyword(k -> k))
+                    .properties("disabled", p -> p.boolean_(b -> b))
                     .properties("createdAt", p -> p.keyword(k -> k))
             );
         });

@@ -10,6 +10,8 @@
     <script src="https://cdn.bootcdn.net/ajax/libs/vue/3.4.27/vue.global.prod.min.js"></script>
     <script src="https://cdn.bootcdn.net/ajax/libs/spark-md5/3.0.2/spark-md5.min.js"></script>
     <style>
+        [v-cloak] { display: none !important; }
+
         :root {
             --bg-root: #ffffff;
             --bg-sidebar: #f5f7fa;
@@ -682,6 +684,159 @@
             background: var(--bg-main);
         }
 
+        /*━━━━━━━━━━━ Auth / Forms ━━━━━━━━━━━*/
+        .form-group {
+            margin-bottom: 16px;
+        }
+        .form-group label {
+            display: block;
+            margin-bottom: 5px;
+            font-size: 13px;
+            font-weight: 500;
+            color: var(--text-secondary);
+        }
+        .form-group input, .form-group select {
+            width: 100%;
+            padding: 8px 12px;
+            border: 1px solid var(--border);
+            border-radius: var(--radius-sm);
+            font-size: 13px;
+            background: #fff;
+            color: var(--text-primary);
+            outline: none;
+            transition: border-color var(--transition);
+        }
+        .form-group input:focus, .form-group select:focus {
+            border-color: var(--accent);
+        }
+        .form-row {
+            display: flex;
+            gap: 12px;
+        }
+        .form-row .form-group { flex: 1; }
+
+        .auth-tabs {
+            display: flex;
+            margin-bottom: 20px;
+            border-bottom: 2px solid var(--border);
+        }
+        .auth-tab {
+            flex: 1;
+            padding: 10px 0;
+            text-align: center;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            color: var(--text-muted);
+            border-bottom: 2px solid transparent;
+            margin-bottom: -2px;
+            transition: all var(--transition);
+        }
+        .auth-tab.active {
+            color: var(--accent);
+            border-bottom-color: var(--accent);
+        }
+
+        /*━━━━━━━━━━━ Panel / Table ━━━━━━━━━━━*/
+        .panel {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            overflow: hidden;
+        }
+        .panel-header {
+            padding: 14px 18px;
+            border-bottom: 1px solid var(--border);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            font-size: 14px;
+            font-weight: 600;
+        }
+        .panel-body {
+            padding: 12px 18px;
+            max-height: 360px;
+            overflow-y: auto;
+        }
+        .data-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 12.5px;
+        }
+        .data-table th, .data-table td {
+            padding: 8px 10px;
+            border-bottom: 1px solid var(--border);
+            text-align: left;
+        }
+        .data-table th {
+            color: var(--text-secondary);
+            font-weight: 600;
+            background: var(--bg-sidebar);
+            position: sticky;
+            top: 0;
+        }
+        .data-table tr:hover td { background: var(--bg-hover); }
+
+        .badge {
+            display: inline-block;
+            padding: 2px 8px;
+            border-radius: 10px;
+            font-size: 11px;
+            font-weight: 500;
+        }
+        .badge-success { background: #e6f7ed; color: #1a7a3a; }
+        .badge-warning { background: #fff8e6; color: #8a6d14; }
+        .badge-danger { background: #fde8e8; color: #9b1c1c; }
+        .badge-info { background: #e8f0fe; color: #1a56db; }
+        .badge-muted { background: #f0f0f0; color: #666; }
+
+        .btn-sm {
+            padding: 4px 10px;
+            border-radius: 4px;
+            border: 1px solid var(--border);
+            background: #fff;
+            color: var(--text-secondary);
+            cursor: pointer;
+            font-size: 11px;
+            margin: 0 2px;
+            transition: all var(--transition);
+        }
+        .btn-sm:hover { background: var(--bg-hover); }
+        .btn-sm.danger { color: var(--danger); border-color: var(--danger); }
+        .btn-sm.danger:hover { background: #fde8e8; }
+
+        .modal-box.wide {
+            width: 720px;
+            max-height: 80vh;
+            overflow-y: auto;
+        }
+
+        /*━━━━━━━━━━━ Top-bar User ━━━━━━━━━━━*/
+        .user-info {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 12.5px;
+            color: var(--text-secondary);
+            margin-right: 8px;
+        }
+        .user-info .avatar-circle {
+            width: 28px; height: 28px;
+            border-radius: 50%;
+            background: var(--accent);
+            color: #fff;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 12px;
+            font-weight: 600;
+        }
+        .topbar-right {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
         /*━━━━━━━━━━━ Responsive ━━━━━━━━━━━*/
         @media (max-width: 768px) {
             .sidebar { position: fixed; top:0; left:0; height:100%; z-index:20; }
@@ -729,7 +884,18 @@
             </button>
             <span class="title">{{ currentTitle }}</span>
             <span v-if="lastIntent" class="intent-badge" :class="lastIntent">{{ intentLabel(lastIntent) }}</span>
-            <button class="upload-btn" @click="showUploadModal = true">📤 上传文档</button>
+            <div class="topbar-right">
+                <button v-if="currentUser" class="upload-btn" @click="openMyFiles">📁 我的文件</button>
+                <button v-if="currentUser && currentUser.role === 'ADMIN'" class="upload-btn" @click="showAdminPanel = !showAdminPanel">⚙ 管理</button>
+                <button v-if="currentUser" class="upload-btn" @click="showUploadModal = true">📤 上传文档</button>
+                <button v-else class="upload-btn" @click="showAuthModal = true; authMode = 'login'">📤 上传文档</button>
+                <div v-if="currentUser" class="user-info">
+                    <div class="avatar-circle">{{ currentUser.name ? currentUser.name.charAt(0) : 'U' }}</div>
+                    <span>{{ currentUser.name }}</span>
+                    <button class="btn-sm" @click="logout" title="退出登录">退出</button>
+                </div>
+                <button v-else class="upload-btn" @click="showAuthModal = true">🔑 登录</button>
+            </div>
         </div>
 
         <div class="chat-area" ref="chatArea">
@@ -820,6 +986,13 @@
                 </template>
                 <div v-else class="file-name">{{ uploadFile.name }} ({{ fmtSize(uploadFile.size) }})</div>
             </div>
+            <div v-if="uploadFile" class="form-group" style="margin-top:16px;">
+                <label>可见范围</label>
+                <select v-model="uploadVisibility">
+                    <option value="DEPARTMENT">本部门</option>
+                    <option value="COMPANY">全公司</option>
+                </select>
+            </div>
             <div v-if="uploading" class="upload-progress-bar">
                 <div class="upload-progress-fill" :style="{ width: uploadProgress + '%' }"></div>
                 <span class="upload-progress-text">{{ uploadProgress }}%</span>
@@ -830,6 +1003,230 @@
                 <button class="btn-confirm" @click="doUpload" :disabled="!uploadFile || uploading">
                     {{ uploading ? '上传中…' : '上传' }}
                 </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- ═══════ Auth Modal ═══════ -->
+    <div v-if="showAuthModal" class="modal-bg" @click.self="showAuthModal = false">
+        <div class="modal-box">
+            <div class="auth-tabs">
+                <div class="auth-tab" :class="{ active: authMode === 'login' }" @click="authMode = 'login'">登录</div>
+                <div class="auth-tab" :class="{ active: authMode === 'register' }" @click="authMode = 'register'">注册</div>
+            </div>
+            <template v-if="authMode === 'login'">
+                <div class="form-group">
+                    <label>账号（用户名 / 手机号）</label>
+                    <input v-model="loginForm.account" placeholder="请输入用户名或手机号" @keydown.enter="doLogin">
+                </div>
+                <div class="form-group">
+                    <label>密码</label>
+                    <input v-model="loginForm.password" type="password" placeholder="请输入密码" @keydown.enter="doLogin">
+                </div>
+                <div class="modal-actions">
+                    <button class="btn-cancel" @click="showAuthModal = false">取消</button>
+                    <button class="btn-confirm" @click="doLogin" :disabled="authLoading">{{ authLoading ? '登录中…' : '登录' }}</button>
+                </div>
+            </template>
+            <template v-else>
+                <div class="form-group">
+                    <label>用户名 <span style="color:var(--danger);">*</span></label>
+                    <input v-model="registerForm.username" placeholder="用于登录">
+                </div>
+                <div class="form-group">
+                    <label>密码 <span style="color:var(--danger);">*</span></label>
+                    <input v-model="registerForm.password" type="password" placeholder="至少6位">
+                </div>
+                <div class="form-group">
+                    <label>姓名 <span style="color:var(--danger);">*</span></label>
+                    <input v-model="registerForm.name" placeholder="真实姓名">
+                </div>
+                <div class="form-row">
+                    <div class="form-group">
+                        <label>性别</label>
+                        <select v-model="registerForm.gender">
+                            <option value="UNKNOWN">未知</option>
+                            <option value="MALE">男</option>
+                            <option value="FEMALE">女</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label>手机号 <span style="color:var(--danger);">*</span></label>
+                        <input v-model="registerForm.phone" placeholder="手机号">
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label>部门 <span style="color:var(--danger);">*</span></label>
+                    <input v-model="registerForm.department" placeholder="所属部门">
+                </div>
+                <div class="modal-actions">
+                    <button class="btn-cancel" @click="showAuthModal = false">取消</button>
+                    <button class="btn-confirm" @click="doRegister" :disabled="authLoading">{{ authLoading ? '注册中…' : '注册' }}</button>
+                </div>
+            </template>
+        </div>
+    </div>
+
+    <!-- ═══════ My Files Panel ═══════ -->
+    <div v-if="showMyFilesPanel" class="modal-bg" @click.self="showMyFilesPanel = false">
+        <div class="modal-box wide">
+            <div class="panel-header">
+                <span>📁 我的文件</span>
+                <button class="btn-cancel" @click="showMyFilesPanel = false" style="font-size:16px;">×</button>
+            </div>
+            <div class="panel-body">
+                <table class="data-table" v-if="myFiles.length > 0">
+                    <thead>
+                        <tr>
+                            <th>文件名</th>
+                            <th>大小</th>
+                            <th>可见范围</th>
+                            <th>状态</th>
+                            <th>上传时间</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr v-for="f in myFiles" :key="f.documentId">
+                            <td>{{ f.fileName }}</td>
+                            <td>{{ fmtSize(f.size) }}</td>
+                            <td><span class="badge" :class="visBadgeClass(f.visibility)">{{ visLabel(f.visibility) }}</span></td>
+                            <td><span class="badge" :class="statusBadgeClass(f.status)">{{ f.status }}</span></td>
+                            <td>{{ f.createdAt }}</td>
+                        </tr>
+                    </tbody>
+                </table>
+                <div v-else style="text-align:center;color:var(--text-muted);padding:30px 0;">
+                    暂无上传文件
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- ═══════ Admin Panel ═══════ -->
+    <div v-if="showAdminPanel" class="modal-bg" @click.self="showAdminPanel = false">
+        <div class="modal-box wide" style="width:800px;">
+            <div class="panel-header">
+                <span>⚙ 管理后台</span>
+                <button class="btn-cancel" @click="showAdminPanel = false" style="font-size:16px;">×</button>
+            </div>
+            <div style="display:flex; border-bottom:1px solid var(--border);">
+                <button style="flex:1;padding:10px 0;border:none;background:none;cursor:pointer;font-size:13px;font-weight:600;"
+                    :style="{ color: adminTab === 'users' ? 'var(--accent)' : 'var(--text-muted)', borderBottom: adminTab === 'users' ? '2px solid var(--accent)' : '2px solid transparent' }"
+                    @click="switchAdminTab('users')">👥 用户管理</button>
+                <button style="flex:1;padding:10px 0;border:none;background:none;cursor:pointer;font-size:13px;font-weight:600;"
+                    :style="{ color: adminTab === 'docs' ? 'var(--accent)' : 'var(--text-muted)', borderBottom: adminTab === 'docs' ? '2px solid var(--accent)' : '2px solid transparent' }"
+                    @click="switchAdminTab('docs')">📄 文档管理</button>
+            </div>
+
+            <div class="panel-body" v-if="adminTab === 'users'">
+                <div style="margin-bottom:12px;">
+                    <button class="btn-confirm" @click="showAddUserForm = true" style="font-size:11px;padding:5px 12px;">＋ 添加用户</button>
+                </div>
+                <table class="data-table">
+                    <thead>
+                        <tr>
+                            <th>用户名</th>
+                            <th>姓名</th>
+                            <th>部门</th>
+                            <th>角色</th>
+                            <th>状态</th>
+                            <th>操作</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr v-for="u in adminUsers" :key="u.id">
+                            <td>{{ u.username }}</td>
+                            <td>{{ u.name }}</td>
+                            <td>{{ u.department }}</td>
+                            <td><span class="badge" :class="u.role === 'ADMIN' ? 'badge-warning' : 'badge-info'">{{ u.role }}</span></td>
+                            <td><span class="badge" :class="u.status === 'ACTIVE' ? 'badge-success' : 'badge-danger'">{{ u.status }}</span></td>
+                            <td>
+                                <button class="btn-sm" @click="toggleUserStatus(u)" :class="u.status === 'ACTIVE' ? 'danger' : ''">
+                                    {{ u.status === 'ACTIVE' ? '禁用' : '启用' }}
+                                </button>
+                                <button class="btn-sm danger" @click="deleteUser(u.id)">删除</button>
+                            </td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+
+            <div class="panel-body" v-if="adminTab === 'docs'">
+                <table class="data-table">
+                    <thead>
+                        <tr>
+                            <th>文件名</th>
+                            <th>上传者</th>
+                            <th>部门</th>
+                            <th>可见范围</th>
+                            <th>状态</th>
+                            <th>操作</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr v-for="d in adminDocs" :key="d.id">
+                            <td>{{ d.fileName }}</td>
+                            <td>{{ d.uploaderName }}</td>
+                            <td>{{ d.department }}</td>
+                            <td><span class="badge" :class="visBadgeClass(d.visibility)">{{ visLabel(d.visibility) }}</span></td>
+                            <td><span class="badge" :class="statusBadgeClass(d.status)">{{ d.status }}</span></td>
+                            <td>
+                                <button class="btn-sm" @click="toggleDocStatus(d)" :class="d.status === 'DISABLED' ? '' : 'danger'">
+                                    {{ d.status === 'DISABLED' ? '启用' : '禁用' }}
+                                </button>
+                                <button class="btn-sm danger" @click="deleteDoc(d.id)">删除</button>
+                            </td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <!-- ═══════ Add User Modal ═══════ -->
+    <div v-if="showAddUserForm" class="modal-bg" @click.self="showAddUserForm = false">
+        <div class="modal-box">
+            <h3>添加用户</h3>
+            <div class="form-group">
+                <label>用户名 <span style="color:var(--danger);">*</span></label>
+                <input v-model="addUserForm.username" placeholder="登录用户名">
+            </div>
+            <div class="form-group">
+                <label>姓名 <span style="color:var(--danger);">*</span></label>
+                <input v-model="addUserForm.name" placeholder="真实姓名">
+            </div>
+            <div class="form-group">
+                <label>密码</label>
+                <input v-model="addUserForm.password" type="password" placeholder="默认123456">
+            </div>
+            <div class="form-group">
+                <label>部门 <span style="color:var(--danger);">*</span></label>
+                <input v-model="addUserForm.department" placeholder="所属部门">
+            </div>
+            <div class="form-row">
+                <div class="form-group">
+                    <label>角色</label>
+                    <select v-model="addUserForm.role">
+                        <option value="USER">普通用户</option>
+                        <option value="ADMIN">管理员</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label>性别</label>
+                    <select v-model="addUserForm.gender">
+                        <option value="UNKNOWN">未知</option>
+                        <option value="MALE">男</option>
+                        <option value="FEMALE">女</option>
+                    </select>
+                </div>
+            </div>
+            <div class="form-group">
+                <label>手机号</label>
+                <input v-model="addUserForm.phone" placeholder="手机号">
+            </div>
+            <div class="modal-actions">
+                <button class="btn-cancel" @click="showAddUserForm = false">取消</button>
+                <button class="btn-confirm" @click="doAddUser">确认添加</button>
             </div>
         </div>
     </div>
@@ -874,6 +1271,13 @@ const app = createApp({
         return {
             API: 'http://localhost:8080/api/v1',
             sidebarCollapsed: false,
+            token: '',
+            currentUser: null,
+            showAuthModal: false,
+            authMode: 'login',
+            authLoading: false,
+            loginForm: { account: '', password: '' },
+            registerForm: { username: '', password: '', name: '', gender: 'UNKNOWN', phone: '', department: '' },
             sessions: [],
             currentSessionId: '',
             currentTitle: 'CompanyDocsAgent',
@@ -885,36 +1289,72 @@ const app = createApp({
             lastIntent: '',
             showUploadModal: false,
             uploadFile: null,
+            uploadVisibility: 'DEPARTMENT',
             uploading: false,
             uploadProgress: 0,
             isDragover: false,
+            showMyFilesPanel: false,
+            myFiles: [],
+            showAdminPanel: false,
+            adminTab: 'users',
+            adminUsers: [],
+            adminDocs: [],
+            showAddUserForm: false,
+            addUserForm: { username: '', password: '123456', name: '', gender: 'UNKNOWN', role: 'USER', phone: '', department: '' },
             toasts: [],
             sourcePopover: { visible: false, text: '', index: 0, fileName: '', x: 0, y: 0 },
-            knowledgeSuggestions: [
-                '公司去年的营收是多少？',
-                '介绍一下公司的年假政策',
-                '员工入职流程是怎样的？',
-                '公司的技术栈有哪些？',
-            ],
-            weatherSuggestions: [
-                '北京今天天气怎么样？',
-                '上海气温多少度？',
-                '深圳天气如何？',
-            ],
-            docSuggestions: [
-                '上传一份技术文档',
-                '如何处理 PDF 文档？',
-            ],
         };
     },
 
     mounted() {
-        this.loadSessions();
+        const saved = localStorage.getItem('auth');
+        if (saved) {
+            try {
+                const data = JSON.parse(saved);
+                this.token = data.token;
+                this.currentUser = data.user;
+            } catch {}
+        }
+        if (this.token) {
+            this.loadSessions();
+        }
         document.addEventListener('click', () => { this.sourcePopover.visible = false; });
     },
 
     methods: {
         intentLabel(i) { return INTENT_LABELS[i] || i; },
+        visLabel(v) {
+            const labels = { DEPARTMENT: '本部门', COMPANY: '全公司' };
+            return labels[v] || v;
+        },
+        visBadgeClass(v) {
+            const classes = { DEPARTMENT: 'badge-info', COMPANY: 'badge-success' };
+            return classes[v] || 'badge-muted';
+        },
+        statusBadgeClass(s) {
+            if (s === 'READY') return 'badge-success';
+            if (s === 'PROCESSING' || s === 'ACCEPTED') return 'badge-warning';
+            if (s === 'DISABLED' || s === 'FAILED' || s === 'DELETED') return 'badge-danger';
+            return 'badge-muted';
+        },
+
+        saveAuth(data) {
+            this.token = data.token;
+            this.currentUser = data.user;
+            localStorage.setItem('auth', JSON.stringify(data));
+        },
+
+        authHeaders() {
+            const h = { 'Content-Type': 'application/json' };
+            if (this.token) h['Authorization'] = 'Bearer ' + this.token;
+            return h;
+        },
+
+        async authFetch(url, options = {}) {
+            if (!options.headers) options.headers = {};
+            if (this.token) options.headers['Authorization'] = 'Bearer ' + this.token;
+            return fetch(url, options);
+        },
 
         // ═══ Toast ═══
         notify(msg, type = 'info') {
@@ -923,21 +1363,102 @@ const app = createApp({
             setTimeout(() => this.toasts.shift(), 3200);
         },
 
+        // ═══ Auth ═══
+        async doLogin() {
+            if (!this.loginForm.account || !this.loginForm.password) {
+                this.notify('请输入账号和密码', 'error');
+                return;
+            }
+            this.authLoading = true;
+            try {
+                const r = await fetch(`${this.API}/auth/login`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(this.loginForm),
+                });
+                const d = await r.json();
+                if (r.ok && d.token) {
+                    this.saveAuth(d);
+                    this.showAuthModal = false;
+                    this.loginForm = { account: '', password: '' };
+                    this.notify('登录成功，欢迎 ' + d.user.name, 'success');
+                    await this.loadSessions();
+                } else {
+                    throw new Error(d.message || '登录失败');
+                }
+            } catch (e) {
+                this.notify(e.message, 'error');
+            } finally {
+                this.authLoading = false;
+            }
+        },
+
+        async doRegister() {
+            if (!this.registerForm.username || !this.registerForm.name || !this.registerForm.department) {
+                this.notify('请填写必填字段', 'error');
+                return;
+            }
+            if (!this.registerForm.phone || this.registerForm.phone.trim() === '') {
+                this.notify('请填写手机号', 'error');
+                return;
+            }
+            if (!this.registerForm.password || this.registerForm.password.length < 6) {
+                this.notify('密码至少6位', 'error');
+                return;
+            }
+            this.authLoading = true;
+            try {
+                const r = await fetch(`${this.API}/auth/register`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(this.registerForm),
+                });
+                if (r.ok) {
+                    const d = await r.json();
+                    this.notify('注册成功，请登录', 'success');
+                    this.authMode = 'login';
+                    this.registerForm = { username: '', password: '', name: '', gender: 'UNKNOWN', phone: '', department: '' };
+                    this.loginForm.account = d.username || this.registerForm.username;
+                } else {
+                    const d = await r.json();
+                    throw new Error(d.message || '注册失败');
+                }
+            } catch (e) {
+                this.notify(e.message, 'error');
+            } finally {
+                this.authLoading = false;
+            }
+        },
+
+        logout() {
+            this.token = '';
+            this.currentUser = null;
+            localStorage.removeItem('auth');
+            this.sessions = [];
+            this.currentSessionId = '';
+            this.currentTitle = 'CompanyDocsAgent';
+            this.messages = [];
+            this.lastIntent = '';
+            this.notify('已退出登录', 'info');
+        },
+
         // ═══ Sessions ═══
         async loadSessions() {
+            if (!this.token) return;
             try {
-                const r = await fetch(`${this.API}/sessions?userId=default-user&limit=50`);
+                const r = await this.authFetch(`${this.API}/sessions?limit=50`);
                 const d = await r.json();
                 this.sessions = Array.isArray(d) ? d : (Array.isArray(d.value) ? d.value : []);
             } catch { /* silent */ }
         },
 
         async newChat() {
+            if (!this.token) { this.notify('请先登录', 'error'); return; }
             try {
-                const r = await fetch(`${this.API}/sessions`, {
+                const r = await this.authFetch(`${this.API}/sessions`, {
                     method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ userId: 'default-user', title: '新对话' }),
+                    headers: this.authHeaders(),
+                    body: JSON.stringify({ title: '新对话' }),
                 });
                 const d = await r.json();
                 const sid = d.sessionId || d.data?.sessionId;
@@ -957,7 +1478,7 @@ const app = createApp({
 
         async loadSessionMessages(sessionId) {
             try {
-                const r = await fetch(`${this.API}/sessions/${sessionId}/messages?limit=100`);
+                const r = await this.authFetch(`${this.API}/sessions/${sessionId}/messages?limit=100`);
                 const d = await r.json();
                 if (d && d.messages && Array.isArray(d.messages)) {
                     this.messages = d.messages.map(m => ({
@@ -982,7 +1503,7 @@ const app = createApp({
         async deleteSession(sid) {
             if (!confirm('确定删除此会话？')) return;
             try {
-                await fetch(`${this.API}/sessions/${sid}`, { method: 'DELETE' });
+                await this.authFetch(`${this.API}/sessions/${sid}`, { method: 'DELETE' });
                 if (this.currentSessionId === sid) {
                     this.currentSessionId = '';
                     this.currentTitle = 'CompanyDocsAgent';
@@ -996,6 +1517,7 @@ const app = createApp({
 
         // ═══ Chat ═══
         async send(optQuery) {
+            if (!this.token) { this.notify('请先登录', 'error'); this.showAuthModal = true; return; }
             const q = (typeof optQuery === 'string') ? optQuery : this.inputQuery.trim();
             if (!q || this.streaming) return;
             if (typeof optQuery !== 'string') this.inputQuery = '';
@@ -1018,10 +1540,10 @@ const app = createApp({
                 this.abortCtrl = new AbortController();
 
                 if (!this.currentTitle || this.currentTitle === '新对话') {
-                    this.currentTitle = q.length > 30 ? q.slice(0, 30) + '…' : q;
+                    this.currentTitle = q.length > 30 ? q.slice(0, 30) + '\u2026' : q;
                 }
 
-                const resp = await fetch(`${this.API}/chat/stream?sessionId=${encodeURIComponent(this.currentSessionId)}&query=${encodeURIComponent(q)}`, {
+                const resp = await this.authFetch(`${this.API}/chat/stream?sessionId=${encodeURIComponent(this.currentSessionId)}&query=${encodeURIComponent(q)}`, {
                     signal: this.abortCtrl.signal,
                 });
 
@@ -1062,6 +1584,11 @@ const app = createApp({
                     this.lastIntent = 'knowledge_qa';
                 } else {
                     const err = await resp.json().catch(() => ({}));
+                    if (resp.status === 401) {
+                        this.logout();
+                        this.notify('登录已过期，请重新登录', 'error');
+                        return;
+                    }
                     last.content = err.message || '请求失败，请稍后重试';
                     last.streaming = false;
                     last.time = this.now();
@@ -1099,9 +1626,9 @@ const app = createApp({
         async feedback(msg, rating) {
             msg.feedback = rating;
             try {
-                await fetch(`${this.API}/feedback`, {
+                await this.authFetch(`${this.API}/feedback`, {
                     method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
+                    headers: this.authHeaders(),
                     body: JSON.stringify({ sessionId: this.currentSessionId, messageId: '', rating, comment: '' }),
                 });
                 this.notify(rating === 'good' ? '感谢反馈！' : '我们会持续改进', 'success');
@@ -1142,6 +1669,12 @@ const app = createApp({
 
         async doUpload() {
             if (!this.uploadFile) return;
+            if (!this.currentUser) {
+                this.showAuthModal = true;
+                this.authMode = 'login';
+                this.notify('请先登录后再上传文档', 'error');
+                return;
+            }
             this.uploading = true;
             this.uploadProgress = 0;
 
@@ -1149,13 +1682,14 @@ const app = createApp({
             const CONCURRENCY = 3;
             const file = this.uploadFile;
             const totalChunks = Math.ceil(file.size / CHUNK_SIZE);
+            const visibility = this.uploadVisibility;
 
             try {
                 const fileHash = await this.computeFileHash(file);
 
-                const initResp = await fetch(`${this.API}/documents/chunk/init`, {
+                const initResp = await this.authFetch(`${this.API}/documents/chunk/init`, {
                     method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
+                    headers: this.authHeaders(),
                     body: JSON.stringify({
                         fileName: file.name,
                         fileSize: file.size,
@@ -1172,7 +1706,7 @@ const app = createApp({
                 let completed = completedSet.size;
 
                 if (!initData.isNew) {
-                    this.notify('\u65AD\u70B9\u7EED\u4F20\uFF1A\u5DF2\u5B8C\u6210 ' + completed + '/' + totalChunks + ' \u5206\u7247\uFF0C\u7EE7\u7EED\u4E0A\u4F20\u2026', 'info');
+                    this.notify('断点续传：已完成 ' + completed + '/' + totalChunks + ' 分片，继续上传…', 'info');
                 }
                 this.uploadProgress = Math.floor(completed / totalChunks * 100);
 
@@ -1189,7 +1723,7 @@ const app = createApp({
 
                     for (let retry = 0; retry < 2; retry++) {
                         try {
-                            const r = await fetch(`${this.API}/documents/chunk/${uploadId}`, {
+                            const r = await this.authFetch(`${this.API}/documents/chunk/${uploadId}`, {
                                 method: 'POST',
                                 body: fd
                             });
@@ -1199,9 +1733,9 @@ const app = createApp({
                                 return;
                             }
                         } catch (e) { /* retry */ }
-                        await new Promise(r => setTimeout(r, 500));
+                        await new Promise(r2 => setTimeout(r2, 500));
                     }
-                    throw new Error('\u5206\u7247 ' + index + ' \u4E0A\u4F20\u5931\u8D25');
+                    throw new Error('分片 ' + index + ' 上传失败');
                 };
 
                 const results = [];
@@ -1215,15 +1749,17 @@ const app = createApp({
                     }
                 }
 
-                const completeResp = await fetch(`${this.API}/documents/chunk/${uploadId}/complete`, {
+                const completeResp = await this.authFetch(`${this.API}/documents/chunk/${uploadId}/complete?visibility=${encodeURIComponent(visibility)}`, {
                     method: 'POST'
                 });
                 if (completeResp.ok) {
                     this.uploadProgress = 100;
-                    this.notify('“' + file.name + '” 上传成功', 'success');
+                    this.notify('\u201C' + file.name + '\u201D 上传成功', 'success');
                     this.showUploadModal = false;
                     this.uploadFile = null;
+                    this.uploadVisibility = 'DEPARTMENT';
                     this.uploadProgress = 0;
+                    await this.loadMyFiles();
                 } else {
                     const d = await completeResp.json().catch(() => ({}));
                     this.notify(d.message || '合并失败', 'error');
@@ -1232,6 +1768,143 @@ const app = createApp({
                 this.notify('上传出错：' + e.message, 'error');
             } finally {
                 this.uploading = false;
+            }
+        },
+
+        // ═══ My Files ═══
+        async loadMyFiles() {
+            if (!this.token) return;
+            try {
+                const r = await this.authFetch(`${this.API}/documents/mine?limit=100`);
+                const d = await r.json();
+                this.myFiles = Array.isArray(d) ? d : [];
+            } catch { this.myFiles = []; }
+        },
+
+        async openMyFiles() {
+            this.showMyFilesPanel = true;
+            await this.loadMyFiles();
+        },
+
+        // ═══ Admin ═══
+        async openAdmin() {
+            this.showAdminPanel = true;
+            await this.switchAdminTab('users');
+        },
+
+        async switchAdminTab(tab) {
+            this.adminTab = tab;
+            if (tab === 'users') {
+                await this.loadAdminUsers();
+            } else if (tab === 'docs') {
+                await this.loadAdminDocs();
+            }
+        },
+
+        async loadAdminUsers() {
+            try {
+                const r = await this.authFetch(`${this.API}/admin/users?limit=100`);
+                this.adminUsers = await r.json();
+            } catch (e) {
+                this.notify('加载用户列表失败: ' + e.message, 'error');
+            }
+        },
+
+        async loadAdminDocs() {
+            try {
+                const r = await this.authFetch(`${this.API}/admin/documents?limit=100`);
+                this.adminDocs = await r.json();
+            } catch (e) {
+                this.notify('加载文档列表失败: ' + e.message, 'error');
+            }
+        },
+
+        async toggleUserStatus(user) {
+            const newStatus = user.status === 'ACTIVE' ? 'DISABLED' : 'ACTIVE';
+            try {
+                const r = await this.authFetch(`${this.API}/admin/users/${user.id}/status`, {
+                    method: 'PUT',
+                    headers: this.authHeaders(),
+                    body: JSON.stringify({ status: newStatus }),
+                });
+                if (r.ok) {
+                    user.status = newStatus;
+                    this.notify(newStatus === 'ACTIVE' ? '已启用' : '已禁用', 'success');
+                }
+            } catch (e) {
+                this.notify('操作失败: ' + e.message, 'error');
+            }
+        },
+
+        async deleteUser(userId) {
+            if (!confirm('确定删除此用户？')) return;
+            try {
+                const r = await this.authFetch(`${this.API}/admin/users/${userId}`, {
+                    method: 'DELETE',
+                });
+                if (r.ok) {
+                    this.notify('已删除', 'success');
+                    await this.loadAdminUsers();
+                }
+            } catch (e) {
+                this.notify('删除失败: ' + e.message, 'error');
+            }
+        },
+
+        async doAddUser() {
+            if (!this.addUserForm.username || !this.addUserForm.name || !this.addUserForm.department) {
+                this.notify('请填写必填字段', 'error');
+                return;
+            }
+            try {
+                const r = await this.authFetch(`${this.API}/admin/users`, {
+                    method: 'POST',
+                    headers: this.authHeaders(),
+                    body: JSON.stringify(this.addUserForm),
+                });
+                if (r.ok) {
+                    this.notify('用户创建成功', 'success');
+                    this.showAddUserForm = false;
+                    this.addUserForm = { username: '', password: '123456', name: '', gender: 'UNKNOWN', role: 'USER', phone: '', department: '' };
+                    await this.loadAdminUsers();
+                } else {
+                    const d = await r.json();
+                    throw new Error(d.message || '创建失败');
+                }
+            } catch (e) {
+                this.notify(e.message, 'error');
+            }
+        },
+
+        async toggleDocStatus(doc) {
+            const newStatus = doc.status === 'DISABLED' ? 'READY' : 'DISABLED';
+            try {
+                const r = await this.authFetch(`${this.API}/admin/documents/${doc.id}/status`, {
+                    method: 'PUT',
+                    headers: this.authHeaders(),
+                    body: JSON.stringify({ status: newStatus }),
+                });
+                if (r.ok) {
+                    doc.status = newStatus;
+                    this.notify(newStatus === 'READY' ? '已启用' : '已禁用', 'success');
+                }
+            } catch (e) {
+                this.notify('操作失败: ' + e.message, 'error');
+            }
+        },
+
+        async deleteDoc(docId) {
+            if (!confirm('确定删除此文档？')) return;
+            try {
+                const r = await this.authFetch(`${this.API}/admin/documents/${docId}`, {
+                    method: 'DELETE',
+                });
+                if (r.ok) {
+                    this.notify('已删除', 'success');
+                    await this.loadAdminDocs();
+                }
+            } catch (e) {
+                this.notify('删除失败: ' + e.message, 'error');
             }
         },
 

@@ -25,7 +25,6 @@ import java.util.function.Consumer;
  *     │    └── ParentChildChunker.chunk()    父子切割 → List&lt;Chunk&gt;
  *     │
  *     ├─(2) EmbeddingService.embedBatch()
- *     │    ├── EmbeddingCache.get()          检查 Redis 缓存命中
  *     │    └── POST /v1/embeddings          调用 bge-large-zh-v1.5
  *     │
  *     └─(3) ElasticsearchVectorStore.upsertBatch()
@@ -89,6 +88,9 @@ public class FullIngestionPipeline {
         String fileName = document.getFileName();
         for (Chunk chunk : chunks) {
             chunk.addMetadata("fileName", fileName);
+            document.getMetadata().forEach(chunk::addMetadata);
+            chunk.addMetadata("documentStatus", "READY");
+            chunk.addMetadata("disabled", false);
         }
 
         updateStatus(document, Document.DocumentStatus.EMBEDDING, statusCallback);
@@ -131,6 +133,11 @@ public class FullIngestionPipeline {
     public void deleteDocument(String documentId) {
         vectorStore.deleteByDocumentId(documentId);
         log.info("Deleted document {} from ES", documentId);
+    }
+
+    public void updateDocumentStatus(String documentId, String status, boolean disabled) {
+        vectorStore.updateDocumentStatus(documentId, status, disabled);
+        log.info("Updated document {} status in ES: {}, disabled={}", documentId, status, disabled);
     }
 
     /**

@@ -155,8 +155,9 @@ public class ChunkUploadManager {
         }
     }
 
+    // 写入分片数据到临时文件
     public void writeChunk(String uploadId, int chunkIndex, byte[] data) throws IOException {
-        UploadSession session = sessions.get(uploadId);
+        UploadSession session = sessions.get(uploadId);//根据 uploadId 查找会话
         if (session == null) {
             throw new IllegalArgumentException("Upload session not found: " + uploadId);
         }
@@ -164,13 +165,14 @@ public class ChunkUploadManager {
             throw new IllegalArgumentException("Invalid chunk index: " + chunkIndex);
         }
 
+        // 计算分片在临时文件中的偏移量
         long offset = (long) chunkIndex * session.chunkSize;
         try (RandomAccessFile raf = new RandomAccessFile(session.tempFile.toFile(), "rw")) {
-            raf.seek(offset);
-            raf.write(data);
+            raf.seek(offset);//定位到分片在临时文件中的偏移量
+            raf.write(data);//写入分片数据
         }
 
-        session.receivedChunks[chunkIndex] = true;
+        session.receivedChunks[chunkIndex] = true;//标记分片已接收
         log.debug("Chunk {}/{} written for uploadId={}, progress={}/{}",
                 chunkIndex + 1, session.totalChunks, uploadId,
                 session.receivedCount(), session.totalChunks);

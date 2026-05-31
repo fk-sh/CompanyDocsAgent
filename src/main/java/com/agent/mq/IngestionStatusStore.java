@@ -51,6 +51,8 @@ public class IngestionStatusStore {
         info.put("updatedAt", Instant.now().toEpochMilli());
     }
 
+    // 重置文档状态为重试中
+    // @param documentId 文档ID
     public void resetForRetry(String documentId) {
         Map<String, Object> info = store.get(documentId);
         if (info != null) {

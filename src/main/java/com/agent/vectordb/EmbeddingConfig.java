@@ -33,9 +33,6 @@ public class EmbeddingConfig {
     /** 批量向量化的每批大小，默认 32 */
     private int batchSize = 32;
 
-    /** Redis 缓存 TTL，默认 24h */
-    private Duration cacheTtl = Duration.ofHours(24);
-
     /**
      * 创建 Embedding API 专用的 WebClient。
      * 设置 10MB 内存上限以容纳大批量向量响应的 JSON。

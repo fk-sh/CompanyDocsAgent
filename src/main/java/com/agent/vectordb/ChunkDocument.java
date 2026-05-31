@@ -48,6 +48,18 @@ public class ChunkDocument {
     /** 额外元数据，ES 检索后 _score 也会注入此处 */
     private Map<String, Object> metadata;
 
+    private String fileName;
+
+    private String uploaderName;
+
+    private String department;
+
+    private String visibility;
+
+    private String documentStatus;
+
+    private Boolean disabled;
+
     /** 创建时间，ISO-8601 格式字符串 */
     private String createdAt;
 }

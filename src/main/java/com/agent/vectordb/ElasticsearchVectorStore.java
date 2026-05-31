@@ -2,11 +2,13 @@ package com.agent.vectordb;
 
 import co.elastic.clients.elasticsearch.ElasticsearchClient;
 import co.elastic.clients.elasticsearch._types.KnnSearch;
+import co.elastic.clients.elasticsearch._types.Script;
 import co.elastic.clients.elasticsearch._types.SortOrder;
 import co.elastic.clients.elasticsearch._types.query_dsl.Query;
 import co.elastic.clients.elasticsearch.core.*;
 import co.elastic.clients.elasticsearch.core.bulk.BulkResponseItem;
 import co.elastic.clients.elasticsearch.core.search.Hit;
+import co.elastic.clients.json.JsonData;
 import com.agent.core.Chunk;
 import lombok.extern.slf4j.Slf4j;
 
@@ -107,7 +109,7 @@ public class ElasticsearchVectorStore {
      * @return 按相似度降序排列的 Chunk 列表
      */
     public List<Chunk> knnSearch(float[] queryVector, int k) {
-        return knnSearch(queryVector, k, null);
+        return knnSearch(queryVector, k, (String) null);
     }
 
     /**
@@ -119,6 +121,14 @@ public class ElasticsearchVectorStore {
      * @return 按相似度降序排列的 Chunk 列表
      */
     public List<Chunk> knnSearch(float[] queryVector, int k, String contentTypeFilter) {
+        return knnSearch(queryVector, k, contentTypeFilter, null);
+    }
+
+    public List<Chunk> knnSearch(float[] queryVector, int k, Map<String, Object> filters) {
+        return knnSearch(queryVector, k, null, filters);
+    }
+
+    public List<Chunk> knnSearch(float[] queryVector, int k, String contentTypeFilter, Map<String, Object> filters) {
         try {
             KnnSearch knn = KnnSearch.of(kq -> {
                 KnnSearch.Builder builder = kq
@@ -127,13 +137,21 @@ public class ElasticsearchVectorStore {
                         .k(k)
                         .numCandidates(k * 3);
 
+                List<Query> queryFilters = new ArrayList<>();
                 if (contentTypeFilter != null && !contentTypeFilter.isBlank()) {
-                    builder.filter(Query.of(q -> q
+                    queryFilters.add(Query.of(q -> q
                             .term(t -> t
                                     .field("contentType")
                                     .value(contentTypeFilter)
                             )
                     ));
+                }
+                Query permissionFilter = buildPermissionFilter(filters);
+                if (permissionFilter != null) {
+                    queryFilters.add(permissionFilter);
+                }
+                if (!queryFilters.isEmpty()) {
+                    builder.filter(queryFilters);
                 }
                 return builder;
             });
@@ -163,7 +181,12 @@ public class ElasticsearchVectorStore {
      * @return 按 BM25 得分降序排列的 Chunk 列表
      */
     public List<Chunk> bm25Search(String queryText, int k) {
+        return bm25Search(queryText, k, null);
+    }
+
+    public List<Chunk> bm25Search(String queryText, int k, Map<String, Object> filters) {
         try {
+            Query permissionFilter = buildPermissionFilter(filters);
             SearchRequest searchRequest = SearchRequest.of(s -> s
                     .index(EsIndexInitializer.CHUNKS_INDEX)
                     .query(q -> q.bool(b -> b
@@ -178,6 +201,7 @@ public class ElasticsearchVectorStore {
                                     .boost(1.0F)
                             ))
                             .minimumShouldMatch("1")
+                            .filter(permissionFilter != null ? permissionFilter : Query.of(f -> f.matchAll(m -> m)))
                     ))
                     .source(src -> src.filter(f -> f.excludes("createdAt")))
                     .size(k)
@@ -266,6 +290,12 @@ public class ElasticsearchVectorStore {
             if (doc.getMetadata() != null) {
                 doc.getMetadata().forEach((k, v) -> chunk.addMetadata(k, v));
             }
+            putIfNotNull(chunk, "fileName", doc.getFileName());
+            putIfNotNull(chunk, "uploaderName", doc.getUploaderName());
+            putIfNotNull(chunk, "department", doc.getDepartment());
+            putIfNotNull(chunk, "visibility", doc.getVisibility());
+            putIfNotNull(chunk, "documentStatus", doc.getDocumentStatus());
+            putIfNotNull(chunk, "disabled", doc.getDisabled());
             if (hit.score() != null) {
                 chunk.addMetadata("_score", hit.score());
             }
@@ -290,12 +320,84 @@ public class ElasticsearchVectorStore {
         doc.setEndOffset(chunk.getEndOffset());
         doc.setEmbedding(chunk.getEmbedding() != null ? toFloatList(chunk.getEmbedding()) : null);
         doc.setMetadata(chunk.getMetadata());
+        doc.setFileName(toStringMetadata(chunk, "fileName"));
+        doc.setUploaderName(toStringMetadata(chunk, "uploaderName"));
+        doc.setDepartment(toStringMetadata(chunk, "department"));
+        doc.setVisibility(toStringMetadata(chunk, "visibility"));
+        doc.setDocumentStatus(toStringMetadata(chunk, "documentStatus"));
+        doc.setDisabled(toBooleanMetadata(chunk, "disabled"));
         doc.setCreatedAt(chunk.getCreatedAt() != null ? chunk.getCreatedAt().toString() : Instant.now().toString());
         return doc;
     }
 
     public ElasticsearchClient getEsClient() {
         return esClient;
+    }
+
+    public void updateDocumentStatus(String documentId, String status, boolean disabled) {
+        try {
+            Map<String, JsonData> scriptParams = new java.util.HashMap<>();
+            scriptParams.put("status", JsonData.of(status));
+            scriptParams.put("disabled", JsonData.of(disabled));
+            Script script = Script.of(s -> s
+                    .source("ctx._source.documentStatus = params.status; ctx._source.disabled = params.disabled; ctx._source.metadata.documentStatus = params.status; ctx._source.metadata.disabled = params.disabled")
+                    .params(scriptParams)
+            );
+            esClient.updateByQuery(u -> u
+                    .index(EsIndexInitializer.CHUNKS_INDEX)
+                    .conflicts(co.elastic.clients.elasticsearch._types.Conflicts.Proceed)
+                    .refresh(true)
+                    .query(q -> q.term(t -> t.field("documentId").value(documentId)))
+                    .script(script)
+            );
+        } catch (IOException e) {
+            throw new RuntimeException("Failed to update document status in ES", e);
+        }
+    }
+
+    private Query buildPermissionFilter(Map<String, Object> filters) {
+        if (filters == null || filters.isEmpty()) {
+            return null;
+        }
+        String role = String.valueOf(filters.getOrDefault("role", "USER"));
+        if ("ADMIN".equals(role) && Boolean.TRUE.equals(filters.get("includeDisabled"))) {
+            return null;
+        }
+        String department = String.valueOf(filters.getOrDefault("department", ""));
+        return Query.of(q -> q.bool(b -> b
+                .filter(f -> f.term(t -> t.field("documentStatus").value("READY")))
+                .filter(f -> f.term(t -> t.field("disabled").value(false)))
+                .filter(f3 -> f3.bool(permission -> permission
+                        .should(s -> s.term(t -> t.field("visibility").value("COMPANY")))
+                        .should(s -> s.bool(bb -> bb
+                                .filter(fa -> fa.term(t -> t.field("visibility").value("DEPARTMENT")))
+                                .filter(fb -> fb.term(t -> t.field("department").value(department)))
+                        ))
+                        .minimumShouldMatch("1")
+                ))
+        ));
+    }
+
+    private void putIfNotNull(Chunk chunk, String key, Object value) {
+        if (value != null) {
+            chunk.addMetadata(key, value);
+        }
+    }
+
+    private String toStringMetadata(Chunk chunk, String key) {
+        Object value = chunk.getMetadata().get(key);
+        return value != null ? value.toString() : null;
+    }
+
+    private Boolean toBooleanMetadata(Chunk chunk, String key) {
+        Object value = chunk.getMetadata().get(key);
+        if (value instanceof Boolean b) {
+            return b;
+        }
+        if (value != null) {
+            return Boolean.parseBoolean(value.toString());
+        }
+        return null;
     }
 
     /**

@@ -68,9 +68,9 @@ public class PreferenceMemoryExtractor {
     @Async
     public void extractAndStoreAsync(String userId, String userMessage) {
         try {
-            List<PreferenceItem> items = extract(userId, userMessage);
+            List<PreferenceItem> items = extract(userId, userMessage);// 从用户消息中提取偏好列表
             for (PreferenceItem item : items) {
-                applyUpdate(userId, item);
+                applyUpdate(userId, item);// 应用每个偏好项到存储
             }
             if (!items.isEmpty()) {
                 log.info("Extracted {} preference items for userId={}", items.size(), userId);
@@ -90,13 +90,13 @@ public class PreferenceMemoryExtractor {
 
         try {
             String response = llm.chat(prompt, userMessage);
-            String json = extractJsonArray(response);
+            String json = extractJsonArray(response);// 从模型响应中提取 JSON 数组
             if (json == null || json.isEmpty()) {
                 return List.of();
             }
 
             List<Map<String, String>> rawList = objectMapper.readValue(
-                    json, new TypeReference<List<Map<String, String>>>() {});
+                    json, new TypeReference<List<Map<String, String>>>() {});// 解析 JSON 数组为 Map 列表
 
             return rawList.stream()
                     .map(m -> new PreferenceItem(
@@ -120,7 +120,7 @@ public class PreferenceMemoryExtractor {
      * - REPLACE：删除旧偏好，插入新偏好
      */
     private void applyUpdate(String userId, PreferenceItem item) {
-        List<PreferenceDocument> existing = store.findByKey(userId, item.key);
+        List<PreferenceDocument> existing = store.findByKey(userId, item.key);// 查找已存在的偏好项
 
         switch (item.action) {
             case "ADD" -> store.insert(userId, item);

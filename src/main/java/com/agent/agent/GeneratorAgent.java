@@ -12,6 +12,7 @@ import org.springframework.stereotype.Component;
 import reactor.core.publisher.Flux;
 
 import java.util.List;
+import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 @Slf4j
@@ -42,19 +43,25 @@ public class GeneratorAgent implements Agent {
                - 用 ```java 和 ``` 包裹整个代码块
                - 代码块前后必须各有一个空行
 
-            4. 【表格格式】必须使用标准 Markdown 表格，严格遵守以下示例：
+            4. 【禁止表格】绝对不要使用 Markdown 表格格式（| 列1 | 列2 |）。
+               当检索文档中包含表格数据时，你必须将其转换为流畅的自然语言描述：
+               
+               ✅ 正确（自然语言描述，有逻辑关联）：
+               JVM 内存区域主要分为两类：线程私有区域包括程序计数器（用于记录执行位置）
+               和虚拟机栈（用于存储栈帧）；线程共享区域则包含堆和方法区。
+               其中堆是垃圾回收的主要区域。
 
-               ✅ 正确（独立成块，前后有空行）：
-
+               ❌ 错误（禁止使用 Markdown 表格）：
                | 区域 | 特性 | 作用 |
                | :--- | :--- | :--- |
                | 程序计数器 | 线程私有 | 记录执行位置 |
-               | 虚拟机栈 | 线程私有 | 存储栈帧 |
 
-               ❌ 错误（禁止内嵌在段落中）：
-               ...用于存储不同类别的数据 | 区域 | 特性 | 作用 ||:---|...
-
-               规则：表格必须独占多行，表头行 + 分隔行 + 数据行，绝对不能把表格写在一段文字里面。
+               转换规则：
+               - 先说明表格的整体主题和结构
+               - 按逻辑关系逐行/逐列描述数据
+               - 体现数据之间的关联和对比
+               - 重要数值必须准确保留
+               - 用段落形式呈现，不要用列表堆积
 
                
             5. 【引用格式】在相关内容后标注来源。
@@ -299,6 +306,8 @@ public class GeneratorAgent implements Agent {
     private String formatAnswer(String raw) {
         String text = raw.trim();
 
+        text = fixCodeBlocks(text);
+
         java.util.LinkedHashMap<Integer, String> sources = extractSources(text);
         text = removeAllSourceMarkers(text);
 
@@ -310,8 +319,7 @@ public class GeneratorAgent implements Agent {
         text = text.replaceAll("(?m)^(\\d+[.、]\\s*)", NL + "$1");
         text = text.replaceAll("(?m)^([-*])\\s+", NL + "$1 ");
 
-        text = text.replaceAll("(?<!" + NL + ")(?=```)", NL + NL);
-        text = text.replaceAll("(```)(?!\\s*$)", "$1" + NL);
+        text = ensureCodeBlockSpacing(text);
 
         text = text.replaceAll(NL + "{3,}", NL + NL);
         text = text.trim();
@@ -327,8 +335,85 @@ public class GeneratorAgent implements Agent {
         return text;
     }
 
+    private String ensureCodeBlockSpacing(String text) {
+        text = text.replaceAll("(```\\w*)\\s*\n", "$1\n");
+        text = text.replaceAll("\n\\s*(```)", "\n$1");
+        text = text.replaceAll("(```)(?!\\n)", "$1\n");
+        text = text.replaceAll("(?<!\n)```", NL + "```");
+        text = text.replaceAll("```(?!\n)", "```" + NL);
+        return text;
+    }
+
+    private String fixCodeBlocks(String text) {
+        java.util.regex.Pattern p = java.util.regex.Pattern.compile(
+            "```(\\w*)\\s*([\\s\\S]*?)```",
+            Pattern.DOTALL
+        );
+        java.util.regex.Matcher m = p.matcher(text);
+        StringBuffer sb = new StringBuffer();
+        while (m.find()) {
+            String lang = m.group(1).trim();
+            String rawCode = m.group(2);
+
+            String code = formatCodeContent(rawCode);
+            String replacement = "```" + lang + "\n" + code + "\n```";
+            m.appendReplacement(sb, java.util.regex.Matcher.quoteReplacement(replacement));
+        }
+        m.appendTail(sb);
+        return sb.toString();
+    }
+
+    private String formatCodeContent(String rawCode) {
+        if (rawCode == null || rawCode.isEmpty()) return "";
+
+        String code = rawCode.trim();
+
+        boolean hasNewline = code.contains("\n");
+        if (!hasNewline) {
+            code = code.replaceAll(";\\s*", ";\n");
+            code = code.replaceAll("\\{\\s*", " {\n");
+            code = code.replaceAll("\\}\\s*(else|catch|finally|while)?", "}\n$1");
+            code = code.replaceAll("\\b(if|else|for|while|do|switch|case|default|try|catch|finally|return|throw|break|continue)\\s+", "$1 ");
+            code = code.replaceAll("(?m)^\\s*", "");
+            code = addIndentation(code);
+        }
+        return code.trim();
+    }
+
+    private String addIndentation(String code) {
+        String[] lines = code.split("\n");
+        StringBuilder result = new StringBuilder();
+        int indentLevel = 0;
+        for (String line : lines) {
+            String trimmed = line.trim();
+            if (trimmed.isEmpty()) continue;
+
+            if (trimmed.startsWith("}")) {
+                indentLevel = Math.max(0, indentLevel - 1);
+            }
+
+            for (int i = 0; i < indentLevel; i++) {
+                result.append("    ");
+            }
+            result.append(trimmed).append("\n");
+
+            int openBraces = countChar(trimmed, '{') - countChar(trimmed, '}');
+            indentLevel += openBraces;
+        }
+        return result.toString().trim();
+    }
+
+    private int countChar(String str, char c) {
+        int count = 0;
+        for (char ch : str.toCharArray()) {
+            if (ch == c) count++;
+        }
+        return count;
+    }
+
     private java.util.LinkedHashMap<Integer, String> extractSources(String text) {
         java.util.LinkedHashMap<Integer, String> sources = new java.util.LinkedHashMap<>();
+        java.util.Set<String> seenFiles = new java.util.HashSet<>();
         java.util.regex.Pattern p = java.util.regex.Pattern.compile(
             "\\[来源\\s*(\\d+)\\s*[-:：\\u2014\\u2013]+\\s*([^\\]]+)?\\]"
         );
@@ -337,16 +422,27 @@ public class GeneratorAgent implements Agent {
             int idx = Integer.parseInt(m.group(1));
             String fileName = m.group(2);
             if (fileName != null) fileName = fileName.trim();
-            String label = (fileName != null && !fileName.isEmpty())
-                ? "来源 " + idx + " - " + fileName : "来源 " + idx;
-            sources.putIfAbsent(idx, label);
+            if (fileName != null && !fileName.isEmpty()) {
+                if (seenFiles.add(fileName)) {
+                    String label = "来源 " + idx + " - " + fileName;
+                    sources.put(sources.size() + 1, label);
+                }
+            } else {
+                String label = "来源 " + idx;
+                if (!sources.containsValue(label)) {
+                    sources.put(sources.size() + 1, label);
+                }
+            }
         }
 
         java.util.regex.Pattern p2 = java.util.regex.Pattern.compile("\\[来源\\s*(\\d+)\\]");
         java.util.regex.Matcher m2 = p2.matcher(text);
         while (m2.find()) {
             int idx = Integer.parseInt(m2.group(1));
-            sources.putIfAbsent(idx, "来源 " + idx);
+            String label = "来源 " + idx;
+            if (!sources.containsValue(label)) {
+                sources.put(sources.size() + 1, label);
+            }
         }
         return sources;
     }
@@ -396,27 +492,74 @@ public class GeneratorAgent implements Agent {
                 dataRows.add(currentRow.toArray(new String[0]));
             }
 
-            int colCount = Math.min(headers.size(), 4);
-            StringBuilder fixed = new StringBuilder(NL).append(NL);
-
-            fixed.append("| ");
-            for (int i = 0; i < colCount; i++) fixed.append(headers.get(i)).append(i < colCount - 1 ? " | " : " |");
-            fixed.append(NL).append("| ");
-            for (int i = 0; i < colCount; i++) fixed.append(":---").append(i < colCount - 1 ? " | " : " |");
-            fixed.append(NL);
-
-            for (String[] row : dataRows) {
-                fixed.append("| ");
-                for (int i = 0; i < colCount && i < row.length; i++) {
-                    fixed.append(row[i]).append(i < colCount - 1 ? " | " : " |");
-                }
-                fixed.append(NL);
-            }
-            fixed.append(NL);
-            m.appendReplacement(sb, fixed.toString());
+            String description = convertTableToDescription(headers, dataRows);
+            m.appendReplacement(sb, NL + NL + description + NL + NL);
         }
         m.appendTail(sb);
         return sb.toString();
+    }
+
+    private String convertTableToDescription(java.util.List<String> headers, java.util.List<String[]> dataRows) {
+        StringBuilder desc = new StringBuilder();
+
+        int colCount = headers.size();
+        
+        if (dataRows.size() == 1 && colCount <= 3) {
+            desc.append("根据").append(headers.get(0)).append("分类：");
+            String[] row = dataRows.get(0);
+            for (int i = 0; i < row.length && i < colCount; i++) {
+                if (i > 0) desc.append("；");
+                desc.append(headers.get(i)).append("为").append(row[i].trim());
+            }
+            desc.append("。");
+        } else if (colCount >= 2 && colCount <= 4) {
+            desc.append("具体包括以下几个方面：");
+            
+            for (int r = 0; r < dataRows.size(); r++) {
+                String[] row = dataRows.get(r);
+                desc.append(NL).append("（").append(r + 1).append("）");
+                
+                String firstCol = row.length > 0 ? row[0].trim() : "";
+                if (!firstCol.isEmpty()) {
+                    desc.append(firstCol);
+                    if (row.length > 1) {
+                        desc.append("的");
+                        for (int i = 1; i < Math.min(row.length, colCount); i++) {
+                            if (i > 1) desc.append("，");
+                            if (headers.size() > i) {
+                                desc.append(headers.get(i)).append("为");
+                            }
+                            desc.append(row[i].trim());
+                        }
+                    }
+                } else {
+                    for (int i = 0; i < Math.min(row.length, colCount); i++) {
+                        if (i > 0) desc.append("，");
+                        if (headers.size() > i) {
+                            desc.append(headers.get(i)).append("为");
+                        }
+                        desc.append(row[i].trim());
+                    }
+                }
+                desc.append("；");
+            }
+            
+            if (desc.toString().endsWith("；")) {
+                desc.setLength(desc.length() - 1);
+                desc.append("。");
+            }
+        } else {
+            desc.append("相关数据如下：");
+            for (String header : headers) {
+                desc.append(header).append("、");
+            }
+            if (desc.toString().endsWith("、")) {
+                desc.setLength(desc.length() - 1);
+            }
+            desc.append("等维度。具体数据共").append(dataRows.size()).append("条记录。");
+        }
+
+        return desc.toString().trim();
     }
 
     private java.util.List<String> parsePipeCells(String pipeLine) {
