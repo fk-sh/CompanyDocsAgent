@@ -6,6 +6,7 @@ import com.agent.auth.PasswordService;
 import com.agent.document.DocumentEntity;
 import com.agent.document.DocumentService;
 import com.agent.document.ManagedDocumentStatus;
+import com.agent.vectordb.ElasticsearchVectorStore;
 import com.agent.user.UserEntity;
 import com.agent.user.UserMapper;
 import com.agent.user.UserRole;
@@ -36,13 +37,16 @@ public class AdminController {
     private final UserMapper userMapper;
     private final DocumentService documentService;
     private final PasswordService passwordService;
+    private final ElasticsearchVectorStore vectorStore;
 
     public AdminController(UserService userService, UserMapper userMapper,
-                           DocumentService documentService, PasswordService passwordService) {
+                           DocumentService documentService, PasswordService passwordService,
+                           ElasticsearchVectorStore vectorStore) {
         this.userService = userService;
         this.userMapper = userMapper;
         this.documentService = documentService;
         this.passwordService = passwordService;
+        this.vectorStore = vectorStore;
     }
 
     private void requireAdmin() {
@@ -176,6 +180,7 @@ public class AdminController {
             throw new IllegalArgumentException("无效的状态: " + status);
         }
         documentService.updateStatus(id, managedStatus, null);
+        syncDocumentStatusToVectorStore(id, managedStatus);
         log.info("Admin updated document status: id={}, status={}", id, status);
         return documentToMap(documentService.findById(id));
     }
@@ -188,8 +193,14 @@ public class AdminController {
             throw new IllegalArgumentException("文档不存在");
         }
         documentService.updateStatus(id, ManagedDocumentStatus.DELETED, null);
+        vectorStore.deleteByDocumentId(id);
         log.info("Admin deleted document: id={}", id);
         return Map.of("status", "deleted", "documentId", id);
+    }
+
+    private void syncDocumentStatusToVectorStore(String documentId, ManagedDocumentStatus status) {
+        boolean disabled = status == ManagedDocumentStatus.DISABLED || status == ManagedDocumentStatus.DELETED;
+        vectorStore.updateDocumentStatus(documentId, status.name(), disabled);
     }
 
     private Map<String, Object> userToMap(UserEntity user) {

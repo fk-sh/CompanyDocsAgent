@@ -366,9 +366,10 @@ public class ElasticsearchVectorStore {
         String department = String.valueOf(filters.getOrDefault("department", ""));
         return Query.of(q -> q.bool(b -> b
                 .filter(f -> f.term(t -> t.field("documentStatus").value("READY")))
-                .filter(f -> f.term(t -> t.field("disabled").value(false)))
+                .mustNot(f -> f.term(t -> t.field("disabled").value(true)))
                 .filter(f3 -> f3.bool(permission -> permission
                         .should(s -> s.term(t -> t.field("visibility").value("COMPANY")))
+                        .should(s -> s.bool(bb -> bb.mustNot(m -> m.exists(e -> e.field("visibility")))))
                         .should(s -> s.bool(bb -> bb
                                 .filter(fa -> fa.term(t -> t.field("visibility").value("DEPARTMENT")))
                                 .filter(fb -> fb.term(t -> t.field("department").value(department)))

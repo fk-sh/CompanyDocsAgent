@@ -1344,7 +1344,7 @@ const app = createApp({
         },
 
         async newChat() {
-            if (!this.token) { this.notify('请先登录', 'error'); return; }
+            if (!this.token) { this.notify('请先登录', 'error'); return ''; }
             try {
                 const r = await this.authFetch(`${this.API}/sessions`, {
                     method: 'POST',
@@ -1355,7 +1355,29 @@ const app = createApp({
                 const sid = d.sessionId || d.data?.sessionId;
                 await this.loadSessions();
                 if (sid) await this.switchSession(sid);
-            } catch { this.notify('创建会话失败', 'error'); }
+                return sid || '';
+            } catch {
+                this.notify('创建会话失败', 'error');
+                return '';
+            }
+        },
+
+        async createSessionOnly() {
+            if (!this.token) return '';
+            try {
+                const r = await this.authFetch(`${this.API}/sessions`, {
+                    method: 'POST',
+                    headers: this.authHeaders(),
+                    body: JSON.stringify({ title: '新对话' }),
+                });
+                const d = await r.json();
+                const sid = d.sessionId || d.data?.sessionId || '';
+                await this.loadSessions();
+                return sid;
+            } catch {
+                this.notify('创建会话失败', 'error');
+                return '';
+            }
         },
 
         async switchSession(sid) {
@@ -1403,8 +1425,15 @@ const app = createApp({
             if (!q || this.streaming) return;
             if (typeof optQuery !== 'string') this.inputQuery = '';
 
-            if (!this.currentSessionId) await this.newChat();
-            if (!this.currentSessionId) this.currentSessionId = 'sess-' + Date.now().toString(36);
+            if (!this.currentSessionId) {
+                const sid = await this.createSessionOnly();
+                if (sid) {
+                    this.currentSessionId = sid;
+                    this.currentTitle = '新对话';
+                } else {
+                    this.currentSessionId = 'sess-' + Date.now().toString(36);
+                }
+            }
 
             const uMsg = { role: 'user', content: q, time: this.now(), intent: '' };
             this.messages.push(uMsg);
@@ -1442,20 +1471,25 @@ const app = createApp({
                         done = streamDone;
                         if (value) {
                             buffer += decoder.decode(value, { stream: !done });
-                            const lines = buffer.split('\n');
-                            buffer = lines.pop() || '';
-                            for (const line of lines) {
-                                if (line.startsWith('data:')) {
-                                    let token = line.substring(5);
-                                    if (token.startsWith(' ')) token = token.substring(1);
-                                    if (token) {
-                                        fullText += token;
-                                        last.content = fullText;
-                                        this.streamContent = fullText;
-                                        this.scrollDown();
-                                    }
+                            const events = buffer.split(/\r?\n\r?\n/);
+                            buffer = events.pop() || '';
+                            for (const eventText of events) {
+                                const token = this.parseSseEvent(eventText);
+                                if (token) {
+                                    fullText += token;
+                                    last.content = fullText;
+                                    this.streamContent = fullText;
+                                    this.scrollDown();
                                 }
                             }
+                        }
+                    }
+
+                    if (buffer.trim()) {
+                        const token = this.parseSseEvent(buffer);
+                        if (token) {
+                            fullText += token;
+                            last.content = fullText;
                         }
                     }
 
@@ -1788,10 +1822,36 @@ const app = createApp({
             }
         },
 
+        parseSseEvent(eventText) {
+            if (!eventText) return '';
+            const dataLines = eventText
+                .split(/\r?\n/)
+                .filter(line => line.startsWith('data:'))
+                .map(line => {
+                    let token = line.substring(5);
+                    if (token.startsWith(' ')) token = token.substring(1);
+                    return token;
+                });
+            return dataLines.join('\n');
+        },
+
+        normalizeAnswerText(text) {
+            if (!text) return '';
+            return text
+                .replace(/\u2028/g, '\n')
+                .replace(/\r\n/g, '\n')
+                .replace(/([^\n])\n(##\s+)/g, '$1\n\n$2')
+                .replace(/([^\n])\n(```)/g, '$1\n\n$2')
+                .replace(/(```[^\n]*\n[\s\S]*?\n```)\n([^\n])/g, '$1\n\n$2')
+                .replace(/([^\n])(\n\|)/g, '$1\n\n$2')
+                .trim();
+        },
+
         // ═══ Render ═══
         renderMd(text) {
             if (!text) return '';
             try {
+                text = this.normalizeAnswerText(text);
                 let html = marked.parse(text);
                 html = html.replace(
                     /\[来源\s*(\d+)(?::\s*([^\]]+))?\]/g,

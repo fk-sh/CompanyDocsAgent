@@ -65,6 +65,7 @@ public class DocumentIngestionConsumer implements RocketMQListener<DocumentInges
             Document document = new Document(documentId, message.getFileName(), message.getFileType());
             document.setFileSize(message.getFileSize());
             document.setUploadedAt(Instant.ofEpochMilli(message.getCreatedAt()));
+            copyMessageMetadata(document, message);
 
             document = ingestionPipeline.ingestToEs(document, filePath, status -> {
                 statusStore.update(documentId, status.name(), null);
@@ -78,6 +79,12 @@ public class DocumentIngestionConsumer implements RocketMQListener<DocumentInges
         } catch (Exception e) {
             handleFailure(message, e.getMessage());
         }
+    }
+
+    private void copyMessageMetadata(Document document, DocumentIngestionMessage message) {
+        if (message.getUploaderName() != null) document.addMetadata("uploaderName", message.getUploaderName());
+        if (message.getDepartment() != null) document.addMetadata("department", message.getDepartment());
+        document.addMetadata("visibility", message.getVisibility() != null ? message.getVisibility() : "COMPANY");
     }
 
     private void handleFailure(DocumentIngestionMessage message, String reason) {

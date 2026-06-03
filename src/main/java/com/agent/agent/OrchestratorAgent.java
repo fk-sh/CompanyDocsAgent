@@ -11,12 +11,15 @@ import org.springframework.stereotype.Component;
 import reactor.core.publisher.Flux;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
+import java.util.function.BiFunction;
+import java.util.function.Function;
 import java.util.stream.Collectors;
 
 @Slf4j
@@ -66,6 +69,12 @@ public class OrchestratorAgent implements Agent {
     private final WeatherAgent weatherAgent;
     private final ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
 
+    /** intent → 单意图处理器：接收 AgentContext 和 Plan，返回执行结果字符串 */
+    private final Map<String, BiFunction<AgentContext, Plan, String>> singleIntentHandlers = new HashMap<>();
+
+    /** intent → 子任务处理器：接收 SubPlan，返回 SubAnswer */
+    private final Map<String, Function<Plan.SubPlan, SubAnswer>> subPlanHandlers = new HashMap<>();
+
     public OrchestratorAgent(DeepSeekChatClient llm,
                              DeepSeekStreamingClient streamingClient,
                              @Qualifier("retrieverAgent") Agent retrieverAgent,
@@ -76,7 +85,54 @@ public class OrchestratorAgent implements Agent {
         this.retrieverAgent = (RetrieverAgent) retrieverAgent;
         this.generatorAgent = (GeneratorAgent) generatorAgent;
         this.weatherAgent = (WeatherAgent) weatherAgent;
-        log.info("OrchestratorAgent initialized with 3 agents: retriever, generator, weather");
+        initHandlers();
+        log.info("OrchestratorAgent initialized");
+    }
+
+    /** 注册意图处理器映射表，替代硬编码 switch-case */
+    private void initHandlers() {
+        // ---- 单意图处理器 ----
+        singleIntentHandlers.put("weather", (ctx, plan) -> {
+            String answer = weatherAgent.query(plan.weatherCity());
+            ctx.setVariable("finalAnswer", answer);
+            ctx.addMessage(Message.assistant(answer));
+            return answer;
+        });
+        singleIntentHandlers.put("chitchat", (ctx, plan) -> {
+            String answer = generatorAgent.generate(ctx);
+            ctx.setVariable("finalAnswer", answer);
+            ctx.addMessage(Message.assistant(answer));
+            return answer;
+        });
+        singleIntentHandlers.put("knowledge_qa", (ctx, plan) -> {
+            log.info("OrchestratorAgent: executing knowledge_qa pipeline");
+            String retrievedContext = retrieverAgent.retrieve(ctx, plan.retrievalQueries());
+            ctx.setVariable("retrievedContext", retrievedContext);
+            String answer = generatorAgent.generate(ctx);
+            ctx.setVariable("finalAnswer", answer);
+            ctx.addMessage(Message.assistant(answer));
+            return answer;
+        });
+
+        // ---- 子任务处理器 ----
+        subPlanHandlers.put("weather", sp -> {
+            String answer = weatherAgent.query(sp.weatherCity());
+            return new SubAnswer(sp.query(), answer);
+        });
+        subPlanHandlers.put("knowledge_qa", sp -> {
+            String retrievedContext = retrieverAgent.retrieve(sp.retrievalQueries());
+            AgentContext subCtx = new AgentContext("sub", sp.query());
+            subCtx.setVariable("retrievedContext", retrievedContext);
+            subCtx.setVariable("intent", "knowledge_qa");
+            String answer = generatorAgent.generate(subCtx);
+            return new SubAnswer(sp.query(), answer);
+        });
+        subPlanHandlers.put("chitchat", sp -> {
+            AgentContext subCtx = new AgentContext("sub", sp.query());
+            subCtx.setVariable("intent", "chitchat");
+            String answer = generatorAgent.generate(subCtx);
+            return new SubAnswer(sp.query(), answer);
+        });
     }
 
     @Override
@@ -115,6 +171,7 @@ public class OrchestratorAgent implements Agent {
             return Flux.just(answer);
         }
 
+        // 默认走 knowledge_qa 的检索+生成流式链路
         String retrievedContext = retrieverAgent.retrieve(ctx, plan.retrievalQueries());
         ctx.setVariable("retrievedContext", retrievedContext);
         return generatorAgent.generateStream(ctx);
@@ -143,40 +200,20 @@ public class OrchestratorAgent implements Agent {
     }
 
     private String executeSingleIntent(AgentContext ctx, Plan plan) {
-        String userQuery = ctx.getUserQuery();
+        String intent = plan.intent();
 
-        switch (plan.intent()) {
-            case "weather" -> {
-                String answer = weatherAgent.query(plan.weatherCity());
-                ctx.setVariable("finalAnswer", answer);
-                ctx.addMessage(Message.assistant(answer));
-                return answer;
-            }
-            case "chitchat" -> {
-                String answer = generatorAgent.generate(ctx);
-                ctx.setVariable("finalAnswer", answer);
-                ctx.addMessage(Message.assistant(answer));
-                return answer;
-            }
-            case "knowledge_qa" -> {
-                log.info("OrchestratorAgent: executing knowledge_qa pipeline");
-                String retrievedContext = retrieverAgent.retrieve(ctx, plan.retrievalQueries());
-                ctx.setVariable("retrievedContext", retrievedContext);
-                String answer = generatorAgent.generate(ctx);
-                ctx.setVariable("finalAnswer", answer);
-                ctx.addMessage(Message.assistant(answer));
-                return answer;
-            }
-            default -> {
-                log.warn("OrchestratorAgent: unknown intent '{}', fallback to knowledge_qa", plan.intent());
-                String retrievedContext = retrieverAgent.retrieve(ctx, List.of(userQuery));
-                ctx.setVariable("retrievedContext", retrievedContext);
-                String answer = generatorAgent.generate(ctx);
-                ctx.setVariable("finalAnswer", answer);
-                ctx.addMessage(Message.assistant(answer));
-                return answer;
-            }
+        BiFunction<AgentContext, Plan, String> handler = singleIntentHandlers.get(intent);
+        if (handler != null) {
+            return handler.apply(ctx, plan);
         }
+
+        log.warn("OrchestratorAgent: no handler for intent '{}', fallback to knowledge_qa", intent);
+        String retrievedContext = retrieverAgent.retrieve(ctx, List.of(ctx.getUserQuery()));
+        ctx.setVariable("retrievedContext", retrievedContext);
+        String answer = generatorAgent.generate(ctx);
+        ctx.setVariable("finalAnswer", answer);
+        ctx.addMessage(Message.assistant(answer));
+        return answer;
     }
 
     private String executeMultiIntent(AgentContext ctx, Plan plan) {
@@ -203,7 +240,17 @@ public class OrchestratorAgent implements Agent {
         StringBuilder sb = new StringBuilder();
         for (int i = 0; i < subAnswers.size(); i++) {
             SubAnswer sa = subAnswers.get(i);
-            sb.append("[子任务 ").append(i + 1).append(": ").append(sa.query()).append("]\n");
+            Plan.SubPlan sp = subPlans.get(i);
+            // 标记每个子任务的类型，让汇总 LLM 知道哪些需要文档来源、哪些不需要
+            String typeLabel = switch (sp.intent()) {
+                case "weather" -> "【类型: 天气查询（API实时数据，无文档来源）】";
+                case "chitchat" -> "【类型: 闲聊（无文档来源）】";
+                case "knowledge_qa" -> "【类型: 知识库检索（有文档来源标注）】";
+                default -> "【类型: " + sp.intent() + "】";
+            };
+            sb.append("---\n");
+            sb.append("[子任务 ").append(i + 1).append(": ").append(sa.query()).append("] ");
+            sb.append(typeLabel).append("\n\n");
             sb.append(sa.answer()).append("\n\n");
         }
         ctx.setVariable("subAnswers", sb.toString());
@@ -216,31 +263,15 @@ public class OrchestratorAgent implements Agent {
     }
 
     private SubAnswer executeSubPlan(Plan.SubPlan subPlan) {
-        switch (subPlan.intent()) {
-            case "weather" -> {
-                String answer = weatherAgent.query(subPlan.weatherCity());
-                return new SubAnswer(subPlan.query(), answer);
-            }
-            case "knowledge_qa" -> {
-                String retrievedContext = retrieverAgent.retrieve(subPlan.retrievalQueries());
+        String intent = subPlan.intent();
 
-                AgentContext subCtx = new AgentContext("sub", subPlan.query());
-                subCtx.setVariable("retrievedContext", retrievedContext);
-                subCtx.setVariable("intent", "knowledge_qa");
-
-                String answer = generatorAgent.generate(subCtx);
-                return new SubAnswer(subPlan.query(), answer);
-            }
-            case "chitchat" -> {
-                AgentContext subCtx = new AgentContext("sub", subPlan.query());
-                subCtx.setVariable("intent", "chitchat");
-                String answer = generatorAgent.generate(subCtx);
-                return new SubAnswer(subPlan.query(), answer);
-            }
-            default -> {
-                return new SubAnswer(subPlan.query(), "无法识别的子任务类型: " + subPlan.intent());
-            }
+        // Map 分发替代 switch-case
+        Function<Plan.SubPlan, SubAnswer> handler = subPlanHandlers.get(intent);
+        if (handler != null) {
+            return handler.apply(subPlan);
         }
+
+        return new SubAnswer(subPlan.query(), "无法识别的子任务类型: " + intent);
     }
 
     private boolean isLikelyChitchat(String query) {

@@ -111,6 +111,7 @@ public class ChatController {
 
         long start = System.currentTimeMillis();
         AgentContext ctx = memoryManager.buildContext(sessionId, query);// 构建上下文，包含用户消息和偏好
+        enrichCurrentUserContext(ctx);
         String answer = orchestratorAgent.execute(ctx);// 执行orchestratorAgent，获取模型回答
 
         long latencyMs = System.currentTimeMillis() - start;// 计算请求处理耗时，单位毫秒
@@ -143,6 +144,7 @@ public class ChatController {
         preferenceExtractor.extractAndStoreAsync(uid, query);// 异步提取用户偏好并存储到内存管理器
 
         AgentContext ctx = memoryManager.buildContext(sid, query);
+        enrichCurrentUserContext(ctx);
 
         StringBuilder fullAnswer = new StringBuilder();
         String finalSid = sid;
@@ -196,6 +198,9 @@ public class ChatController {
             docInfo.put("size", file.getSize());
             docInfo.put("taskId", taskId);
             docInfo.put("fileType", fileType);
+            docInfo.put("uploaderName", user.getName());
+            docInfo.put("department", user.getDepartment());
+            docInfo.put("visibility", documentVisibility.name());
             docInfo.put("createdAt", LocalDateTime.now().format(DateTimeFormatter.ISO_LOCAL_DATE_TIME));
 
             if (ingestionProducer != null) {// 如果有RocketMQ生产者
@@ -207,6 +212,9 @@ public class ChatController {
                         .filePath(tempFile.toString())
                         .fileSize(file.getSize())
                         .createdAt(Instant.now().toEpochMilli())
+                        .uploaderName(user.getName())
+                        .department(user.getDepartment())
+                        .visibility(documentVisibility.name())
                         .build();
 
                 boolean sent = ingestionProducer.send(message);// 发送文档信息到RocketMQ
@@ -503,6 +511,9 @@ public class ChatController {
             docInfo.put("size", fileSize);
             docInfo.put("taskId", taskId);
             docInfo.put("fileType", fileType);
+            docInfo.put("uploaderName", user.getName());
+            docInfo.put("department", user.getDepartment());
+            docInfo.put("visibility", documentVisibility.name());
             docInfo.put("createdAt", LocalDateTime.now().format(DateTimeFormatter.ISO_LOCAL_DATE_TIME));
 
             if (ingestionProducer != null) {
@@ -514,6 +525,9 @@ public class ChatController {
                         .filePath(mergedFile.toString())
                         .fileSize(fileSize)
                         .createdAt(Instant.now().toEpochMilli())
+                        .uploaderName(user.getName())
+                        .department(user.getDepartment())
+                        .visibility(documentVisibility.name())
                         .build();
 
                 boolean sent = ingestionProducer.send(message);// 发送文档消息到 RocketMQ
@@ -619,6 +633,7 @@ public class ChatController {
             Document document = new Document(documentId, fileName, fileType);// 创建文档实体
             document.setFileSize(Files.size(filePath));// 设置文件大小
             document.setUploadedAt(Instant.now());
+            copyDocumentMetadata(document, docInfo);
 
             // 直接上传文档到 Elasticsearch
             document = ingestionPipeline.ingestToEs(document, filePath, status -> {
@@ -632,6 +647,25 @@ public class ChatController {
             log.error("Direct ingestion failed: documentId={}", documentId, ex);
             docInfo.put("status", "FAILED: " + ex.getMessage());
         }
+    }
+
+    private void copyDocumentMetadata(Document document, Map<String, Object> docInfo) {
+        Object uploaderName = docInfo.get("uploaderName");
+        Object department = docInfo.get("department");
+        Object visibility = docInfo.get("visibility");
+        if (uploaderName != null) document.addMetadata("uploaderName", uploaderName);
+        if (department != null) document.addMetadata("department", department);
+        document.addMetadata("visibility", visibility != null ? visibility : DocumentVisibility.COMPANY.name());
+    }
+
+    private void enrichCurrentUserContext(AgentContext ctx) {
+        CurrentUser user = CurrentUserHolder.get();
+        if (user == null) {
+            return;
+        }
+        ctx.setVariable("userId", user.getId());
+        ctx.setVariable("department", user.getDepartment() != null ? user.getDepartment() : "");
+        ctx.setVariable("role", user.getRole() != null ? user.getRole() : "USER");
     }
 
     // 从上下文提取上下文段
