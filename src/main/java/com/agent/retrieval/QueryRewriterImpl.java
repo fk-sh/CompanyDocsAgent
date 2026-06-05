@@ -48,6 +48,21 @@ public class QueryRewriterImpl {
             - Java服务端性能优化方法论
             """;
 
+    private static final String REWRITE_AND_EXPAND_PROMPT = """
+            你是企业知识库检索 Query 生成器。请根据最近对话历史和用户当前问题，生成适合检索的查询。
+
+            任务：
+            1. 如果当前问题包含“这个、它、上述、刚才、该问题、这种”等指代词，请根据对话历史补全指代对象。
+            2. 如果当前问题已经完整，则保持原意，不要过度改写。
+            3. 生成一个 resolved_query，表示补全后的用户问题。
+            4. 生成 2-3 个 retrieval_queries，用于向量检索和关键词检索。
+            5. retrieval_queries 必须具体、可独立检索，不要生成无关问题。
+            6. 多个子问题如果属于同一主题，仍作为 retrieval_queries，不要当成多意图。
+
+            输出严格 JSON，不要 Markdown，不要解释：
+            {"resolved_query":"...","retrieval_queries":["...","..."]}
+            """;
+
     private static final int MAX_EXPANDED_QUERIES = 3;// 最大扩展查询数量
 
     private final DeepSeekChatClient chatClient;
@@ -92,6 +107,25 @@ public class QueryRewriterImpl {
         }
     }
 
+    public RewriteExpandResult rewriteAndExpand(String originalQuery, String historyContext) {
+        log.debug("Rewrite and expand query: {}", originalQuery);
+        Set<String> queries = new LinkedHashSet<>();
+        queries.add(originalQuery);
+
+        try {
+            String userPrompt = "【最近对话历史】\n" + (historyContext == null || historyContext.isBlank() ? "（无）" : historyContext)
+                    + "\n\n【用户当前问题】\n" + originalQuery;
+            String response = chatClient.chat(REWRITE_AND_EXPAND_PROMPT, userPrompt);
+            RewriteExpandResult parsed = parseRewriteExpandResponse(response, originalQuery);
+            queries.add(parsed.resolvedQuery());
+            queries.addAll(parsed.retrievalQueries());
+            return new RewriteExpandResult(parsed.resolvedQuery(), new ArrayList<>(queries));
+        } catch (Exception e) {
+            log.warn("Rewrite and expand failed, using original query: {}", e.getMessage());
+            return new RewriteExpandResult(originalQuery, List.of(originalQuery));
+        }
+    }
+
     //多query改写合并
     public List<String> expandAndMerge(String originalQuery) {
         Set<String> allQueries = new LinkedHashSet<>();
@@ -123,6 +157,54 @@ public class QueryRewriterImpl {
         }
 
         return new ArrayList<>(allQueries);
+    }
+
+    private RewriteExpandResult parseRewriteExpandResponse(String response, String originalQuery) {
+        if (response == null || response.isBlank()) {
+            return new RewriteExpandResult(originalQuery, List.of(originalQuery));
+        }
+        try {
+            String json = extractJson(response);
+            if (json == null) {
+                return new RewriteExpandResult(originalQuery, List.of(originalQuery));
+            }
+            com.fasterxml.jackson.databind.ObjectMapper mapper = new com.fasterxml.jackson.databind.ObjectMapper();
+            @SuppressWarnings("unchecked")
+            java.util.Map<String, Object> map = mapper.readValue(json, java.util.Map.class);
+            String resolved = String.valueOf(map.getOrDefault("resolved_query", originalQuery)).trim();
+            if (resolved.isBlank() || "null".equalsIgnoreCase(resolved)) {
+                resolved = originalQuery;
+            }
+
+            Set<String> queries = new LinkedHashSet<>();
+            queries.add(resolved);
+            Object rawQueries = map.get("retrieval_queries");
+            if (rawQueries instanceof List<?> list) {
+                for (Object item : list) {
+                    if (item == null) continue;
+                    String query = item.toString().trim();
+                    if (!query.isBlank()) {
+                        queries.add(query);
+                    }
+                    if (queries.size() >= MAX_EXPANDED_QUERIES + 1) {
+                        break;
+                    }
+                }
+            }
+            return new RewriteExpandResult(resolved, new ArrayList<>(queries));
+        } catch (Exception e) {
+            log.warn("Parse rewrite-and-expand response failed: {}", e.getMessage());
+            return new RewriteExpandResult(originalQuery, List.of(originalQuery));
+        }
+    }
+
+    private String extractJson(String response) {
+        int start = response.indexOf('{');
+        int end = response.lastIndexOf('}');
+        if (start >= 0 && end > start) {
+            return response.substring(start, end + 1);
+        }
+        return null;
     }
 
     //解析改写响应
@@ -175,6 +257,8 @@ public class QueryRewriterImpl {
         }
         return subQueries;
     }
+
+    public record RewriteExpandResult(String resolvedQuery, List<String> retrievalQueries) {}
 
     /**
      * RewriteResult 是一个 record，自动生成了构造器、equals/hashCode、toString 以及字段的访问器方法。

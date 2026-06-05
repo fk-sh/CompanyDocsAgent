@@ -141,7 +141,7 @@ public class ElasticsearchVectorStore {
                 if (contentTypeFilter != null && !contentTypeFilter.isBlank()) {
                     queryFilters.add(Query.of(q -> q
                             .term(t -> t
-                                    .field("contentType")
+                                    .field("contentType.keyword")
                                     .value(contentTypeFilter)
                             )
                     ));
@@ -347,7 +347,7 @@ public class ElasticsearchVectorStore {
                     .index(EsIndexInitializer.CHUNKS_INDEX)
                     .conflicts(co.elastic.clients.elasticsearch._types.Conflicts.Proceed)
                     .refresh(true)
-                    .query(q -> q.term(t -> t.field("documentId").value(documentId)))
+                    .query(q -> q.term(t -> t.field("documentId.keyword").value(documentId)))
                     .script(script)
             );
         } catch (IOException e) {
@@ -364,18 +364,27 @@ public class ElasticsearchVectorStore {
             return null;
         }
         String department = String.valueOf(filters.getOrDefault("department", ""));
+
+        // documentStatus/visibility/department 是 text 类型，term 查询需用 .keyword 子字段
+        Query statusFilter = Query.of(f -> f.term(t -> t.field("documentStatus.keyword").value("READY")));
+        Query disabledFilter = Query.of(f -> f.bool(b -> b.mustNot(mn -> mn.term(t -> t.field("disabled").value(true)))));
+        Query visibilityCompany = Query.of(s -> s.term(t -> t.field("visibility.keyword").value("COMPANY")));
+        Query visibilityMissing = Query.of(s -> s.bool(bb -> bb.mustNot(m -> m.exists(e -> e.field("visibility")))));
+        Query visibilityDept = Query.of(s -> s.bool(bb -> bb
+                .filter(fa -> fa.term(t -> t.field("visibility.keyword").value("DEPARTMENT")))
+                .filter(fb -> fb.term(t -> t.field("department.keyword").value(department)))
+        ));
+        Query permissionFilter = Query.of(f3 -> f3.bool(p -> p
+                .should(visibilityCompany)
+                .should(visibilityMissing)
+                .should(visibilityDept)
+                .minimumShouldMatch("1")
+        ));
+
         return Query.of(q -> q.bool(b -> b
-                .filter(f -> f.term(t -> t.field("documentStatus").value("READY")))
-                .mustNot(f -> f.term(t -> t.field("disabled").value(true)))
-                .filter(f3 -> f3.bool(permission -> permission
-                        .should(s -> s.term(t -> t.field("visibility").value("COMPANY")))
-                        .should(s -> s.bool(bb -> bb.mustNot(m -> m.exists(e -> e.field("visibility")))))
-                        .should(s -> s.bool(bb -> bb
-                                .filter(fa -> fa.term(t -> t.field("visibility").value("DEPARTMENT")))
-                                .filter(fb -> fb.term(t -> t.field("department").value(department)))
-                        ))
-                        .minimumShouldMatch("1")
-                ))
+                .filter(statusFilter)
+                .filter(disabledFilter)
+                .filter(permissionFilter)
         ));
     }
 

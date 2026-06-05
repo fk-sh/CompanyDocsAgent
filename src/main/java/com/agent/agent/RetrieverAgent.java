@@ -62,7 +62,7 @@ public class RetrieverAgent implements Agent {
     }
 
     public String retrieve(AgentContext ctx, List<String> queries) {
-        return retrieve(queries, buildFilters(ctx));
+        return retrieve(queries, buildFilters(ctx), ctx.getVariable("memoryContext", ""));
     }
 
     public String retrieve(List<String> queries) {
@@ -70,6 +70,10 @@ public class RetrieverAgent implements Agent {
     }
 
     public String retrieve(List<String> queries, Map<String, Object> filters) {
+        return retrieve(queries, filters, "");
+    }
+
+    public String retrieve(List<String> queries, Map<String, Object> filters, String historyContext) {
         if (queries == null || queries.isEmpty()) {
             return "";
         }
@@ -79,7 +83,7 @@ public class RetrieverAgent implements Agent {
         List<CompletableFuture<Void>> futures = new ArrayList<>();
         for (String query : queries) {
             futures.add(CompletableFuture.runAsync(() -> {
-                List<Chunk> roundChunks = retrieveWithPipeline(query, filters);
+                List<Chunk> roundChunks = retrieveWithPipeline(query, filters, historyContext);
                 allChunks.addAll(roundChunks);
             }, executor));
         }
@@ -114,7 +118,7 @@ public class RetrieverAgent implements Agent {
                 break;
             }
 
-            List<Chunk> moreChunks = retrieveWithPipeline(newQuery, filters);
+            List<Chunk> moreChunks = retrieveWithPipeline(newQuery, filters, historyContext);
             for (Chunk c : moreChunks) {
                 if (seen.add(c.getId())) {
                     deduplicated.add(c);
@@ -127,39 +131,14 @@ public class RetrieverAgent implements Agent {
         return buildContextText(deduplicated);
     }
 
-    private List<Chunk> retrieveWithPipeline(String query, Map<String, Object> filters) {
-        var rewritten = queryRewriter.rewrite(query);
-
-        List<String> variants = new ArrayList<>();
-        variants.add(query);
-        variants.addAll(rewritten.getEffectiveQueries());
-
-        List<String> rewrittenQueries = rewritten.getEffectiveQueries();
-        List<CompletableFuture<List<String>>> expandFutures = new ArrayList<>();
-        for (String q : rewrittenQueries) {
-            expandFutures.add(CompletableFuture.supplyAsync(() -> {
-                try {
-                    return queryRewriter.expand(q);
-                } catch (Exception e) {
-                    log.warn("RetrieverAgent: expand '{}' failed: {}", q, e.getMessage());
-                    return List.<String>of();
-                }
-            }, executor));
+    private List<Chunk> retrieveWithPipeline(String query, Map<String, Object> filters, String historyContext) {
+        QueryRewriterImpl.RewriteExpandResult result = queryRewriter.rewriteAndExpand(query, historyContext);
+        List<String> uniqueVariants = new ArrayList<>(new java.util.LinkedHashSet<>(result.retrievalQueries()));
+        if (uniqueVariants.isEmpty()) {
+            uniqueVariants.add(query);
         }
-
-        for (CompletableFuture<List<String>> future : expandFutures) {
-            try {
-                List<String> expanded = future.join();
-                variants.addAll(expanded);
-            } catch (Exception e) {
-                log.warn("RetrieverAgent: expand future failed: {}", e.getMessage());
-            }
-        }
-
-        List<String> uniqueVariants = new ArrayList<>(new java.util.LinkedHashSet<>(variants));
-        log.debug("RetrieverAgent: query expanded to {} variants", uniqueVariants.size());
-
-        return hybridRetriever.retrieveWithQueries(query, uniqueVariants, 10, filters);
+        log.debug("RetrieverAgent: query expanded to {} variants: {}", uniqueVariants.size(), uniqueVariants);
+        return hybridRetriever.retrieveWithQueries(result.resolvedQuery(), uniqueVariants, 10, filters);
     }
 
     private Map<String, Object> buildFilters(AgentContext ctx) {

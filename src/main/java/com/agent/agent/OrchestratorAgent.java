@@ -54,12 +54,26 @@ public class OrchestratorAgent implements Agent {
             {"intent":"multi_intent","subPlans":[{"intent":"weather","query":"今天杭州天气","weatherCity":"杭州","needsRetrieval":false},{"intent":"knowledge_qa","query":"线程池怎么配","retrievalQueries":["Java线程池核心参数配置","ThreadPoolExecutor最佳实践"],"needsRetrieval":true}]}
             """;
 
+    private static final String MULTI_INTENT_DETECT_PROMPT = """
+            你是任务数量识别器。判断用户输入是单一任务还是多个独立任务。
+
+            判断规则：
+            1. 多个问题如果围绕同一主题，仍然是 SINGLE，例如“线程池是什么，核心参数有哪些，怎么配置”。
+            2. 需要不同工具或不同处理方式的独立任务是 MULTI，例如“北京天气 线程池核心参数”。
+            3. 完全无关的多个问题是 MULTI，即使用户没有使用“顺便、另外、以及”等连接词。
+            4. 只输出 SINGLE 或 MULTI，不要输出其他内容。
+            """;
+
     private static final String[] CHITCHAT_KEYWORDS = {
             "你好", "您好", "嗨", "hello", "hi", "hey",
             "早上好", "晚上好", "下午好", "早安", "晚安",
             "再见", "拜拜", "bye", "谢谢", "感谢", "thanks",
             "哈哈", "呵呵", "嘻嘻", "你是谁", "你能做什么",
             "讲个笑话", "讲个故事"
+    };
+
+    private static final String[] WEATHER_KEYWORDS = {
+            "天气", "气温", "温度", "下雨", "降雨", "下雪", "风力", "湿度", "空气质量"
     };
 
     private final DeepSeekChatClient llm;
@@ -120,7 +134,10 @@ public class OrchestratorAgent implements Agent {
             return new SubAnswer(sp.query(), answer);
         });
         subPlanHandlers.put("knowledge_qa", sp -> {
-            String retrievedContext = retrieverAgent.retrieve(sp.retrievalQueries());
+            List<String> queries = sp.retrievalQueries() == null || sp.retrievalQueries().isEmpty()
+                    ? List.of(sp.query())
+                    : sp.retrievalQueries();
+            String retrievedContext = retrieverAgent.retrieve(queries);
             AgentContext subCtx = new AgentContext("sub", sp.query());
             subCtx.setVariable("retrievedContext", retrievedContext);
             subCtx.setVariable("intent", "knowledge_qa");
@@ -145,7 +162,7 @@ public class OrchestratorAgent implements Agent {
         String userQuery = ctx.getUserQuery();
         log.info("OrchestratorAgent: query='{}'", userQuery);
 
-        Plan plan = makePlan(userQuery);
+        Plan plan = routeFastOrPlan(userQuery);
         ctx.setVariable("intent", plan.intent());
 
         if (plan.isMultiIntent()) {
@@ -158,7 +175,7 @@ public class OrchestratorAgent implements Agent {
         String userQuery = ctx.getUserQuery();
         log.info("OrchestratorAgent stream: query='{}'", userQuery);
 
-        Plan plan = makePlan(userQuery);
+        Plan plan = routeFastOrPlan(userQuery);
         ctx.setVariable("intent", plan.intent());
 
         if (plan.isChitchat()) {
@@ -166,22 +183,33 @@ public class OrchestratorAgent implements Agent {
         }
 
         if ("weather".equals(plan.intent())) {
-            String answer = weatherAgent.query(plan.weatherCity());
-            ctx.setVariable("finalAnswer", answer);
-            return Flux.just(answer);
+            return weatherAgent.queryStream(plan.weatherCity());
         }
 
-        // 默认走 knowledge_qa 的检索+生成流式链路
+        if (plan.isMultiIntent()) {
+            prepareMultiIntentContext(ctx, plan);
+            return generatorAgent.generateStream(ctx);
+        }
+
         String retrievedContext = retrieverAgent.retrieve(ctx, plan.retrievalQueries());
         ctx.setVariable("retrievedContext", retrievedContext);
         return generatorAgent.generateStream(ctx);
     }
 
-    private Plan makePlan(String userQuery) {
+    private Plan routeFastOrPlan(String userQuery) {
         if (isLikelyChitchat(userQuery)) {
             return Plan.chitchat();
         }
+        if (isMultiIntentByLlm(userQuery)) {
+            return makePlan(userQuery);
+        }
+        if (containsAny(userQuery, WEATHER_KEYWORDS)) {
+            return Plan.weather(extractWeatherCity(userQuery));
+        }
+        return Plan.knowledgeQa(List.of(userQuery));
+    }
 
+    private Plan makePlan(String userQuery) {
         try {
             String response = llm.chat(PLAN_PROMPT, userQuery).trim();
             log.info("OrchestratorAgent Plan LLM response: {}", response);
@@ -217,6 +245,14 @@ public class OrchestratorAgent implements Agent {
     }
 
     private String executeMultiIntent(AgentContext ctx, Plan plan) {
+        prepareMultiIntentContext(ctx, plan);
+        String finalAnswer = generatorAgent.generate(ctx);
+        ctx.setVariable("finalAnswer", finalAnswer);
+        ctx.addMessage(Message.assistant(finalAnswer));
+        return finalAnswer;
+    }
+
+    private void prepareMultiIntentContext(AgentContext ctx, Plan plan) {
         List<Plan.SubPlan> subPlans = plan.subPlans();
         log.info("OrchestratorAgent: executing {} sub-plans in parallel", subPlans.size());
 
@@ -245,21 +281,16 @@ public class OrchestratorAgent implements Agent {
             String typeLabel = switch (sp.intent()) {
                 case "weather" -> "【类型: 天气查询（API实时数据，无文档来源）】";
                 case "chitchat" -> "【类型: 闲聊（无文档来源）】";
-                case "knowledge_qa" -> "【类型: 知识库检索（有文档来源标注）】";
+                case "knowledge_qa" -> "【类型: 知识库检索】";
                 default -> "【类型: " + sp.intent() + "】";
             };
             sb.append("---\n");
-            sb.append("[子任务 ").append(i + 1).append(": ").append(sa.query()).append("] ");
+            sb.append("【问题").append(i + 1).append("】").append(sa.query()).append("\n");
             sb.append(typeLabel).append("\n\n");
             sb.append(sa.answer()).append("\n\n");
         }
         ctx.setVariable("subAnswers", sb.toString());
         ctx.setVariable("intent", "multi_intent");
-
-        String finalAnswer = generatorAgent.generate(ctx);
-        ctx.setVariable("finalAnswer", finalAnswer);
-        ctx.addMessage(Message.assistant(finalAnswer));
-        return finalAnswer;
     }
 
     private SubAnswer executeSubPlan(Plan.SubPlan subPlan) {
@@ -283,6 +314,39 @@ public class OrchestratorAgent implements Agent {
             }
         }
         return false;
+    }
+
+    private boolean isMultiIntentByLlm(String query) {
+        if (query == null || query.isBlank()) return false;
+        try {
+            String response = llm.chat(MULTI_INTENT_DETECT_PROMPT, query).trim().toUpperCase();
+            log.info("OrchestratorAgent multi-intent detect response: {}", response);
+            return response.startsWith("MULTI");
+        } catch (Exception e) {
+            log.warn("OrchestratorAgent: multi-intent detection failed: {}, fallback to single task", e.getMessage());
+            return false;
+        }
+    }
+
+    private boolean containsAny(String query, String[] keywords) {
+        String lower = query.toLowerCase();
+        for (String keyword : keywords) {
+            if (lower.contains(keyword.toLowerCase())) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private String extractWeatherCity(String query) {
+        if (query == null || query.isBlank()) {
+            return "北京";
+        }
+        String cleaned = query
+                .replaceAll("今天|明天|现在|当前|最近|一下|查询|查|的|怎么样|如何|天气|气温|温度|下雨|降雨|下雪|风力|湿度|空气质量", "")
+                .replaceAll("[，。！？、,.!?\\s]", "")
+                .trim();
+        return cleaned.isEmpty() ? "北京" : cleaned;
     }
 
     private String extractJson(String response) {

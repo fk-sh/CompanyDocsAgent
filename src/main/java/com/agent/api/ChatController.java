@@ -618,7 +618,7 @@ public class ChatController {
                 .build();
     }
 
-    // 直接上传文档，在没有RocketMQ时使用
+    // 直接上传文档，在没有RocketMQ时使用（改为异步，避免阻塞上传接口）
     private void doDirectIngestion(String documentId, String fileName, String fileType,
                                       Path filePath, Map<String, Object> docInfo) {
         if (ingestionPipeline == null) {
@@ -626,27 +626,31 @@ public class ChatController {
             log.warn("Ingestion pipeline not available, document {} pending", documentId);
             return;
         }
-        try {
-            log.info("Falling back to direct ingestion: documentId={}, file={}", documentId, fileName);
-            statusStore.update(documentId, "PROCESSING_DIRECT", null);
 
-            Document document = new Document(documentId, fileName, fileType);// 创建文档实体
-            document.setFileSize(Files.size(filePath));// 设置文件大小
-            document.setUploadedAt(Instant.now());
-            copyDocumentMetadata(document, docInfo);
+        docInfo.put("status", "ACCEPTED_PENDING");
+        log.info("Starting async ingestion (no MQ): documentId={}, file={}", documentId, fileName);
 
-            // 直接上传文档到 Elasticsearch
-            document = ingestionPipeline.ingestToEs(document, filePath, status -> {
-                statusStore.update(documentId, status.name(), null);
-            });
+        new Thread(() -> {
+            try {
+                statusStore.update(documentId, "PROCESSING_DIRECT", null);
 
-            docInfo.put("status", "READY");
-            docInfo.put("chunkCount", document.getChunkCount());
-            log.info("Direct ingestion completed: documentId={}, chunks={}", documentId, document.getChunkCount());
-        } catch (Exception ex) {
-            log.error("Direct ingestion failed: documentId={}", documentId, ex);
-            docInfo.put("status", "FAILED: " + ex.getMessage());
-        }
+                Document document = new Document(documentId, fileName, fileType);
+                document.setFileSize(Files.size(filePath));
+                document.setUploadedAt(Instant.now());
+                copyDocumentMetadata(document, docInfo);
+
+                document = ingestionPipeline.ingestToEs(document, filePath, status -> {
+                    statusStore.update(documentId, status.name(), null);
+                });
+
+                docInfo.put("status", "READY");
+                docInfo.put("chunkCount", document.getChunkCount());
+                log.info("Async ingestion completed: documentId={}, chunks={}", documentId, document.getChunkCount());
+            } catch (Exception ex) {
+                log.error("Async ingestion failed: documentId={}", documentId, ex);
+                docInfo.put("status", "FAILED: " + ex.getMessage());
+            }
+        }, "ingestion-" + documentId).start();
     }
 
     private void copyDocumentMetadata(Document document, Map<String, Object> docInfo) {

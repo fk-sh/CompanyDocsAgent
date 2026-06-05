@@ -2,13 +2,14 @@ package com.agent.agent;
 
 import com.agent.core.Agent;
 import com.agent.core.AgentContext;
-import com.agent.core.Message;
 import com.agent.llm.DeepSeekChatClient;
+import com.agent.llm.DeepSeekStreamingClient;
 import com.agent.mcp.McpTool;
 import io.modelcontextprotocol.spec.McpSchema.Content;
 import io.modelcontextprotocol.spec.McpSchema.TextContent;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
+import reactor.core.publisher.Flux;
 
 import java.util.List;
 import java.util.Map;
@@ -32,23 +33,23 @@ public class WeatherAgent implements Agent {
 
             【输出模板 - 请严格按此结构输出】
 
-            🌤️ 今日天气
+            今日天气
 
             （1-2句话概括，标注温度、风力、湿度）
 
-            👔 穿搭建议
+            穿搭建议
 
             - 衣物厚度建议
             - 防风/防雨建议
             - 配色建议
 
-            🚗 出行建议
+            出行建议
 
             - 出行适宜度评级
             - 风险提醒
             - 推荐活动
 
-            💊 健康提醒
+            健康提醒
 
             - 紫外线/防潮/温差等提醒
             - 季节性注意事项
@@ -58,13 +59,15 @@ public class WeatherAgent implements Agent {
 
     private final McpTool weatherTool;
     private final DeepSeekChatClient llm;
+    private final DeepSeekStreamingClient streamingClient;
 
-    public WeatherAgent(List<McpTool> tools, DeepSeekChatClient llm) {
+    public WeatherAgent(List<McpTool> tools, DeepSeekChatClient llm, DeepSeekStreamingClient streamingClient) {
         this.weatherTool = tools.stream()
                 .filter(t -> "weather_query".equals(t.name()))
                 .findFirst()
                 .orElse(null);
         this.llm = llm;
+        this.streamingClient = streamingClient;
         log.info("WeatherAgent initialized, weatherTool available: {}", weatherTool != null);
     }
 
@@ -74,26 +77,7 @@ public class WeatherAgent implements Agent {
     }
 
     public String query(String city) {
-        if (weatherTool == null) {
-            return "天气查询服务暂时不可用";
-        }
-
-        log.info("WeatherAgent querying weather for: {}", city);
-
-        String rawWeather;
-        try {
-            var result = weatherTool.call(Map.of("city", city));
-            if (result.content() != null && !result.content().isEmpty()) {
-                Content c = result.content().get(0);
-                rawWeather = c instanceof TextContent tc ? tc.text() : c.toString();
-            } else {
-                rawWeather = "天气数据获取失败";
-            }
-        } catch (Exception e) {
-            log.error("WeatherAgent MCP call failed: {}", e.getMessage());
-            rawWeather = "天气数据获取失败: " + e.getMessage();
-        }
-
+        String rawWeather = fetchRawWeather(city);
         if (rawWeather.contains("失败") || rawWeather.isEmpty()) {
             return "抱歉，未能获取到 " + city + " 的天气数据，请稍后重试。";
         }
@@ -105,11 +89,58 @@ public class WeatherAgent implements Agent {
         try {
             String advice = llm.chat(advicePrompt);
             log.info("WeatherAgent generated advice for {}: {} chars", city, advice.length());
-            return formatAdvice(advice);
+            return formatAdvice(cleanWeatherText(advice));
         } catch (Exception e) {
             log.error("WeatherAgent LLM advice generation failed: {}", e.getMessage());
             return rawWeather + "\n\n（智能建议生成失败，以上为原始天气数据）";
         }
+    }
+
+    public Flux<String> queryStream(String city) {
+        String rawWeather = fetchRawWeather(city);
+        if (rawWeather.contains("失败") || rawWeather.isEmpty()) {
+            return Flux.just("抱歉，未能获取到 " + city + " 的天气数据，请稍后重试。");
+        }
+
+        log.info("WeatherAgent raw weather for {}: {}", city, rawWeather);
+        String advicePrompt = String.format(WEATHER_ADVICE_PROMPT, rawWeather);
+        return streamingClient.streamRaw(advicePrompt)
+                .map(this::cleanWeatherText)
+                .doOnComplete(() -> log.info("WeatherAgent stream completed for {}", city))
+                .doOnError(e -> log.error("WeatherAgent stream error for {}: {}", city, e.getMessage()))
+                .onErrorResume(e -> Flux.just(rawWeather + "\n\n（智能建议生成失败，以上为原始天气数据）"));
+    }
+
+    private String fetchRawWeather(String city) {
+        if (weatherTool == null) {
+            return "天气查询服务暂时不可用";
+        }
+
+        log.info("WeatherAgent querying weather for: {}", city);
+        try {
+            var result = weatherTool.call(Map.of("city", city));
+            if (result.content() != null && !result.content().isEmpty()) {
+                Content c = result.content().get(0);
+                return c instanceof TextContent tc ? tc.text() : c.toString();
+            }
+            return "天气数据获取失败";
+        } catch (Exception e) {
+            log.error("WeatherAgent MCP call failed: {}", e.getMessage());
+            return "天气数据获取失败: " + e.getMessage();
+        }
+    }
+
+    private String cleanWeatherText(String text) {
+        if (text == null || text.isEmpty()) {
+            return "";
+        }
+        return text.replace("🌤️", "")
+                .replace("👔", "")
+                .replace("🚗", "")
+                .replace("💊", "")
+                .replace("??", "")
+                .replace("？?", "")
+                .replace("?？", "");
     }
 
     private static final String[] TITLE_MARKERS = {

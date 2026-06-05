@@ -26,7 +26,7 @@ public class GeneratorAgent implements Agent {
 
             1. 【空行分段】每个标题前后必须有空行，每个代码块前后必须有空行，每个段落之间必须有空行。
                正确格式：
-               ## 标题
+               **标题**
 
                内容段落...
 
@@ -34,7 +34,7 @@ public class GeneratorAgent implements Agent {
                代码...
                ```
 
-            2. 【标题格式】只用 ## 二级标题。标题后面必须有空格再接文字。
+            2. 【标题格式】标题使用加粗文本区分正文，例如 **核心参数**。绝对不要使用 #、##、### 等 Markdown 标题符号。
 
             3. 【代码强制格式化】检索文档中代码 token 之间可能没有空格，你必须在输出时修复。
                - 类型和变量名之间加空格
@@ -64,8 +64,7 @@ public class GeneratorAgent implements Agent {
                - 用段落形式呈现，不要用列表堆积
 
                
-            5. 【引用格式】在相关内容后标注来源。
-               例：...性能开销 [来源 1 - xxx.docx]。每个事实陈述后都要标注来源，不要遗漏。
+            5. 【来源格式】回答中绝对不要出现任何来源标注，不要输出 [来源...]，也不要在末尾输出参考来源。
 
             6. 【去重】同一知识点只出现一次，禁止重复。
 
@@ -88,20 +87,33 @@ public class GeneratorAgent implements Agent {
             === 输出格式铁律（必须逐条遵守，违反任何一条即为不合格） ===
 
             1. 【空行分段】每个标题前后必须有空行，每个代码块前后必须有空行，每个段落之间必须有空行。
-            2. 【标题格式】只用 ## 二级标题。标题后面必须有空格再接文字。
+            2. 【标题格式】标题使用加粗文本区分正文，例如 **子问题一**。绝对不要使用 #、##、### 等 Markdown 标题符号。
             3. 【代码强制格式化】检索文档中代码 token 之间可能没有空格，你必须在输出时修复。
                - 类型和变量名之间加空格、操作符两侧加空格、每条语句独占一行
                - 用 ```java 和 ``` 包裹整个代码块
             4. 【禁止表格】绝对不要使用 Markdown 表格格式。表格数据必须转换为流畅的自然语言描述。
-            5. 【引用格式】仅对知识库检索类回答标注来源（[来源 N - 文件名]）。天气/闲聊类回答没有文档来源，绝对不要编造来源。
+            5. 【来源格式】回答中绝对不要出现任何来源标注，不要输出 [来源...]，也不要在末尾输出参考来源。天气/闲聊类回答同样不输出来源。
             6. 【去重】同一知识点只出现一次，禁止重复。
             7. 【绝对禁止】不能编造信息。天气数据直接使用子任务回答中的内容；知识库内容严格基于子任务提供的检索结果。
 
             汇总要求：
-            - 整合各子任务的结果，避免重复
-            - 用 ## 二级标题分段呈现不同子问题的答案
-            - 天气类答案放在最前面
-            - 每个子任务的内容质量不得低于原始子任务回答
+            - 必须按子问题分组输出，每个子问题单独成块。
+            - 每个子问题必须用 Markdown 引用块单独包住，也就是该问题标题、正文、列表的每一行都必须以 > 开头，形成独立方框。
+            - 每个分组标题只写用户问题本身，例如：> **西安天气今天怎么样**，不要写“问题一”、“问题二”、“子任务一”等编号。
+            - 不同子问题之间必须空一行。
+            - 输出示例：
+              > **西安天气今天怎么样**
+              >
+              > 今日天气...
+              >
+              > 穿搭建议...
+
+              > **Redis持久化机制是怎么样的**
+              >
+              > Redis 提供 RDB、AOF 和混合持久化...
+            - 天气类答案放在最前面。
+            - 每个子任务的内容质量不得低于原始子任务回答。
+            - 不要把不同子问题的答案混在同一个段落里。
             """;
 
     private static final String REFLECTION_PROMPT = """
@@ -110,19 +122,23 @@ public class GeneratorAgent implements Agent {
             【用户问题】
             %s
 
+            【检索文档内容】
+            %s
+
             【回答】
             %s
 
             审核标准：
             1. 回答是否直接回应了用户问题？是否存在答非所问？
             2. 回答是否清晰、完整、无歧义？
-            3. 回答是否不存在明显的事实错误或编造？
+            3. 回答中的事实是否都能被检索文档内容支撑？如果回答包含检索文档中没有的信息，判定 FAIL。
+            4. 回答中是否仍然出现了 [来源...]、参考来源、文件名引用等来源展示？如果出现，判定 FAIL。
 
             请只回复一个单词：PASS 或 FAIL
             如果 FAIL，请另起一行简要说明问题所在。
             """;
 
-    private static final int MAX_REFLECTION_ROUNDS = 1;
+    private static final int MAX_REFLECTION_ROUNDS = 2;
 
     private final DeepSeekChatClient llm;
     private final DeepSeekStreamingClient streamingClient;
@@ -171,23 +187,81 @@ public class GeneratorAgent implements Agent {
             userPrompt = buildKnowledgeUserPrompt(ctx);
         }
 
-        return streamingClient.streamRaw(systemPrompt, userPrompt)
-                .collectList()
-                .map(tokens -> formatAnswer(String.join("", tokens)))
-                .flatMapMany(Flux::just)
+        return cleanAnswerStream(streamingClient.streamRaw(systemPrompt, userPrompt))
                 .doOnComplete(() -> log.info("GeneratorAgent stream completed"))
                 .doOnError(e -> log.error("GeneratorAgent stream error: {}", e.getMessage()));
     }
 
+    private Flux<String> cleanAnswerStream(Flux<String> source) {
+        return Flux.create(sink -> {
+            StringBuilder pending = new StringBuilder();
+            java.util.LinkedHashMap<Integer, String> sources = new java.util.LinkedHashMap<>();
+            java.util.Set<String> seenFiles = new java.util.HashSet<>();
+
+            source.subscribe(token -> {
+                pending.append(token);
+                String cleanedPending = stripCompleteSourceMarkers(pending.toString(), sources, seenFiles);
+                pending.setLength(0);
+                pending.append(cleanedPending);
+
+                int safeLen = Math.max(0, pending.length() - 120);
+                if (safeLen > 0) {
+                    String emit = cleanInlineOutput(pending.substring(0, safeLen));
+                    pending.delete(0, safeLen);
+                    if (!emit.isEmpty()) {
+                        sink.next(emit);
+                    }
+                }
+            }, sink::error, () -> {
+                String rest = stripCompleteSourceMarkers(pending.toString(), sources, seenFiles);
+                rest = cleanInlineOutput(rest);
+                if (!rest.isEmpty()) {
+                    sink.next(rest);
+                }
+                sink.complete();
+            });
+        });
+    }
+
+    private String cleanInlineOutput(String text) {
+        return text.replaceAll("(?m)^\\s*[#＃]{1,6}\\s*", "")
+                .replace("**📚 参考来源**", "参考来源");
+    }
+
+    private String stripCompleteSourceMarkers(String text, java.util.LinkedHashMap<Integer, String> sources,
+                                              java.util.Set<String> seenFiles) {
+        java.util.regex.Pattern p = java.util.regex.Pattern.compile(
+                "\\[来源\\s*(\\d+)\\s*[-:：\\u2014\\u2013]+\\s*([^\\]]+)?\\]"
+        );
+        java.util.regex.Matcher m = p.matcher(text);
+        StringBuffer sb = new StringBuffer();
+        while (m.find()) {
+            int idx = Integer.parseInt(m.group(1));
+            String fileName = m.group(2);
+            if (fileName != null) {
+                fileName = fileName.trim();
+            }
+            if (fileName != null && !fileName.isEmpty() && seenFiles.add(fileName)) {
+                sources.put(sources.size() + 1, fileName);
+            } else if ((fileName == null || fileName.isEmpty()) && !sources.containsValue("来源 " + idx)) {
+                sources.put(sources.size() + 1, "来源 " + idx);
+            }
+            m.appendReplacement(sb, "");
+        }
+        m.appendTail(sb);
+        return sb.toString().replaceAll("\\[来源\\s*\\d+\\]", "");
+    }
+
     private String generateWithReflection(AgentContext ctx) {
         String userQuery = ctx.getUserQuery();
+        String retrievedContext = ctx.getVariable("retrievedContext", "");
         String userPrompt = buildKnowledgeUserPrompt(ctx);
 
         String answer = llm.chat(QA_SYSTEM_PROMPT, userPrompt);
         log.info("GeneratorAgent first answer generated, length={}", answer.length());
 
         for (int round = 1; round <= MAX_REFLECTION_ROUNDS; round++) {
-            String reflectionPrompt = String.format(REFLECTION_PROMPT, userQuery, answer);
+            String reflectionPrompt = String.format(REFLECTION_PROMPT, userQuery, retrievedContext, answer);
             String reflectionResult = llm.chat(reflectionPrompt).trim();
             String upper = reflectionResult.toUpperCase();
 
@@ -224,7 +298,7 @@ public class GeneratorAgent implements Agent {
         String answer = llm.chat(QA_SYSTEM_PROMPT, userPrompt);
 
         for (int round = 1; round <= MAX_REFLECTION_ROUNDS; round++) {
-            String reflectionPrompt = String.format(REFLECTION_PROMPT, "多意图汇总", answer);
+            String reflectionPrompt = String.format(REFLECTION_PROMPT, "多意图汇总", userPrompt, answer);
             String reflectionResult = llm.chat(reflectionPrompt).trim();
             String upper = reflectionResult.toUpperCase();
 
@@ -325,8 +399,7 @@ public class GeneratorAgent implements Agent {
 
         text = fixInlineTables(text);
 
-        text = text.replaceAll("(?m)^##\\s*", NL + NL + "## ");
-        text = text.replaceAll("(?m)^###\\s*", NL + NL + "### ");
+        text = text.replaceAll("(?m)^\\s*[#＃]{1,6}\\s*", NL + NL);
 
         text = text.replaceAll("(?m)^(\\d+[.、]\\s*)", NL + "$1");
         text = text.replaceAll("(?m)^([-*])\\s+", NL + "$1 ");
@@ -335,14 +408,6 @@ public class GeneratorAgent implements Agent {
 
         text = text.replaceAll(NL + "{3,}", NL + NL);
         text = text.trim();
-
-        if (!sources.isEmpty()) {
-            StringBuilder srcBlock = new StringBuilder(NL).append(NL).append("---").append(NL).append("**📚 参考来源**").append(NL);
-            for (java.util.Map.Entry<Integer, String> entry : sources.entrySet()) {
-                srcBlock.append("- ").append(entry.getValue()).append(NL);
-            }
-            text += srcBlock.toString();
-        }
 
         return text;
     }
@@ -436,8 +501,7 @@ public class GeneratorAgent implements Agent {
             if (fileName != null) fileName = fileName.trim();
             if (fileName != null && !fileName.isEmpty()) {
                 if (seenFiles.add(fileName)) {
-                    String label = "来源 " + idx + " - " + fileName;
-                    sources.put(sources.size() + 1, label);
+                    sources.put(sources.size() + 1, fileName);
                 }
             } else {
                 String label = "来源 " + idx;

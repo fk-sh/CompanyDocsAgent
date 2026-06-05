@@ -453,13 +453,16 @@
         .msg-content h2 { font-size: 1.15em; }
         .msg-content h3 { font-size: 1.05em; }
         .msg-content blockquote {
-            border-left: 3px solid var(--accent);
-            padding: 6px 14px;
-            margin: 8px 0;
-            background: rgba(255,255,255,.02);
-            border-radius: 0 6px 6px 0;
+            border: 1px solid var(--border);
+            border-left: 4px solid var(--accent);
+            padding: 14px 18px;
+            margin: 14px 0;
+            background: rgba(107,140,186,.06);
+            border-radius: var(--radius-sm);
             color: var(--text-secondary);
         }
+        .msg-content blockquote > :first-child { margin-top: 0; }
+        .msg-content blockquote > :last-child { margin-bottom: 0; }
         .msg-content table {
             width: 100%;
             border-collapse: collapse;
@@ -886,7 +889,7 @@
             <span v-if="lastIntent" class="intent-badge" :class="lastIntent">{{ intentLabel(lastIntent) }}</span>
             <div class="topbar-right">
                 <button v-if="currentUser" class="upload-btn" @click="openMyFiles">📁 我的文件</button>
-                <button v-if="currentUser && currentUser.role === 'ADMIN'" class="upload-btn" @click="showAdminPanel = !showAdminPanel">⚙ 管理</button>
+                <button v-if="currentUser && currentUser.role === 'ADMIN'" class="upload-btn" @click="openAdmin">⚙ 管理</button>
                 <button v-if="currentUser" class="upload-btn" @click="showUploadModal = true">📤 上传文档</button>
                 <button v-else class="upload-btn" @click="showAuthModal = true; authMode = 'login'">📤 上传文档</button>
                 <div v-if="currentUser" class="user-info">
